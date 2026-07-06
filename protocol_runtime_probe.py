@@ -10185,7 +10185,6 @@ def protocol_time_warp_hold(
                 )
 
         page.wait_for_timeout(80)
-        broadcast_time_warp("start")
         knp_results = broadcast_knp_prestart("before_mouse_down")
         min_knp = max(0, int(min_knp_prestart_ok or 0))
         if min_knp:
@@ -10230,6 +10229,10 @@ def protocol_time_warp_hold(
                 except Exception:
                     pass
                 return False
+        # Start the accelerated clock only after exact KNP material is ready.
+        # Otherwise the KNP readiness wait itself inflates fake hold time before
+        # the button is pressed, producing 35s+ proof timelines.
+        broadcast_time_warp("start")
         pre_down_dwell_ms = max(0, int(pre_down_dwell_ms or 0))
         if pre_down_dwell_ms:
             print(f"[Probe] time_warp_hold: pre-down dwell {pre_down_dwell_ms}ms with hover jitter")
