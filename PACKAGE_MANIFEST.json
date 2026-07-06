@@ -1,8 +1,8 @@
 {
   "package": "outlook-register-current-20260706_185526",
-  "created_at": "20260706_185526",
+  "created_at": "20260706_235648",
   "source": "C:\\Users\\wdnmd\\Documents\\outlook\\OutlookRegister-main\\OutlookRegister-repo",
-  "included_count": 134,
+  "included_count": 136,
   "excluded_state_dirs": [
     ".git",
     "Results",
@@ -19,6 +19,7 @@
     ".gitattributes",
     ".github/workflows/ci.yml",
     ".github/workflows/live-registration.yml",
+    ".github/workflows/sandbox-registration.yml",
     ".gitignore",
     "ADSPOWER_CDP_RUNBOOK.md",
     "CTF_USAGE.md",
@@ -130,6 +131,7 @@
     "run_rewrite_final_once.ps1",
     "run_semiprotocol_5s_firstpass_once.ps1",
     "run_semiprotocol_5s_once.ps1",
+    "sandbox_registration_flow.py",
     "selftest_1s_offline.py",
     "settings.py",
     "setup_mihomo_isolated.py",
