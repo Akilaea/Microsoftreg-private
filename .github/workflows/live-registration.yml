@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       proxy_url:
-        description: "Proxy URL for the live run, or direct/off/none to disable proxy"
+        description: "Proxy URL, secret_or_direct, or direct/off/none to disable proxy"
         required: false
-        default: "direct"
+        default: "secret_or_direct"
       wall_ms:
         description: "Visible hold wall time in milliseconds"
         required: false
@@ -19,6 +19,14 @@ on:
         description: "Run browser headless: true or false"
         required: false
         default: "false"
+      preverify_min_total_ms:
+        description: "Minimum total flow age before pre-captcha risk/verify"
+        required: false
+        default: "12000"
+      thin_bootstrap_wait_ms:
+        description: "Thin bootstrap wait budget in milliseconds"
+        required: false
+        default: "12000"
 
 permissions:
   contents: read
@@ -30,6 +38,7 @@ jobs:
     timeout-minutes: 20
     env:
       PYTHONIOENCODING: utf-8
+      LIVE_PROXY_URL: ${{ secrets.LIVE_PROXY_URL }}
 
     steps:
       - name: Disable Git line-ending conversion
@@ -61,8 +70,14 @@ jobs:
       - name: Prepare GitHub Actions runtime config
         shell: powershell
         run: |
-          $proxy = "${{ inputs.proxy_url }}"
-          if ([string]::IsNullOrWhiteSpace($proxy)) { $proxy = "direct" }
+          $proxyInput = "${{ inputs.proxy_url }}"
+          $secretProxy = $env:LIVE_PROXY_URL
+          if ([string]::IsNullOrWhiteSpace($proxyInput)) { $proxyInput = "secret_or_direct" }
+          if ($proxyInput -in @("secret", "secret_or_direct")) {
+            $proxy = if ([string]::IsNullOrWhiteSpace($secretProxy)) { "direct" } else { $secretProxy }
+          } else {
+            $proxy = $proxyInput
+          }
           if ($proxy -notin @("direct", "off", "none", "disabled", "__none__")) {
             Write-Host "::add-mask::$proxy"
           }
@@ -73,6 +88,10 @@ jobs:
           } else {
             "OUTLOOK_REGISTER_HEADLESS=0" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           }
+          "OUTLOOK_SIGNUP_PROTOCOL_TAKEOVER_PREVERIFY_TRANSPORT=page_fetch" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "OUTLOOK_SIGNUP_PROTOCOL_TAKEOVER_PREVERIFY_MIN_TOTAL_MS=${{ inputs.preverify_min_total_ms }}" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "OUTLOOK_SIGNUP_PROTOCOL_TAKEOVER_THIN_BOOTSTRAP_WAIT_MS=${{ inputs.thin_bootstrap_wait_ms }}" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "OUTLOOK_SIGNUP_PROTOCOL_TAKEOVER_THIN_GOTO_WAIT_UNTIL=commit" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
           $browserCandidates = @(
             "$env:ProgramFiles\Google\Chrome\Application\chrome.exe",
@@ -114,14 +133,20 @@ jobs:
             $json,
             [System.Text.UTF8Encoding]::new($false)
           )
-          Write-Host "GITHUB_ACTIONS_LIVE_CONFIG_OK browser=$browserPath proxy=$($cfg.proxy) headless=$headless"
+          Write-Host "GITHUB_ACTIONS_LIVE_CONFIG_OK browser=$browserPath proxy=$($cfg.proxy) headless=$headless preverify_min_total_ms=${{ inputs.preverify_min_total_ms }} thin_wait_ms=${{ inputs.thin_bootstrap_wait_ms }}"
 
       - name: Run full live registration flow
         shell: powershell
         timeout-minutes: ${{ fromJSON(inputs.timeout_minutes) }}
         run: |
-          $proxy = "${{ inputs.proxy_url }}"
-          if ([string]::IsNullOrWhiteSpace($proxy)) { $proxy = "direct" }
+          $proxyInput = "${{ inputs.proxy_url }}"
+          $secretProxy = $env:LIVE_PROXY_URL
+          if ([string]::IsNullOrWhiteSpace($proxyInput)) { $proxyInput = "secret_or_direct" }
+          if ($proxyInput -in @("secret", "secret_or_direct")) {
+            $proxy = if ([string]::IsNullOrWhiteSpace($secretProxy)) { "direct" } else { $secretProxy }
+          } else {
+            $proxy = $proxyInput
+          }
           powershell -NoProfile -ExecutionPolicy Bypass -File .\run_1s_protocol_restart_once.ps1 `
             -Config .\config.ctf.runtime.github-actions-live.json `
             -ProxyUrl $proxy `
