@@ -1,0 +1,172 @@
+{
+    "choose_browser": "patchright",
+    "email_suffix": "@outlook.com",
+    "proxy": "http://127.0.0.1:17890",
+    "bot_protection_wait": 11,
+    "max_captcha_retries": 2,
+    "concurrent_flows": 1,
+    "max_tasks": 1,
+    "manual_captcha": false,
+    "manual_captcha_wait_seconds": 180,
+    "manual_post_verify_wait_seconds": 10,
+    "post_captcha_account_wait_seconds": 8,
+    "capture_challenge": false,
+    "challenge_dump_max_html": 500000,
+    "capture_network": true,
+    "capture_network_post_data": true,
+    "capture_network_headers": true,
+    "capture_network_response_body": true,
+    "capture_network_response_body_keywords": [
+        "collector-pxzc5j78di.hsprotect.net",
+        "signup.live.com/API/CreateAccount",
+        "signup.live.com/API/CheckAvailableSigninNames",
+        "login.microsoftonline.com/9188040d-6c67-4c5b-b112-36a304b66dad/api/v1.0/risk",
+        "risk/verify",
+        "risk/initialize"
+    ],
+    "capture_network_max_body": 1000000,
+    "redact_network_cookies": true,
+    "network_url_keywords": [
+        "outlook.live.com",
+        "signup.live.com",
+        "login.microsoftonline.com",
+        "login.live.com",
+        "account.live.com",
+        "client.hip.live.com",
+        "iframe.hsprotect.net",
+        "captcha.hsprotect.net",
+        "client.hsprotect.net",
+        "collector-pxzc5j78di.hsprotect.net",
+        "hsprotect.net",
+        "fpt.live.com",
+        "browser.events.data.microsoft.com"
+    ],
+    "captcha": {
+        "mode": "hold",
+        "hold_min_ms": 9500,
+        "hold_max_ms": 12500,
+        "post_wait_ms": 16000,
+        "hold_retries": 2,
+        "locate_timeout_ms": 22000,
+        "hold_jitter_probability": 0.14,
+        "hold_jitter_x": 0.8,
+        "hold_jitter_y": 0.6,
+        "move_algorithm": "windmouse",
+        "move_style": "line_then_arc",
+        "allow_visible_iframe_fallback": false
+    },
+    "context": {
+        "locale": "en-US",
+        "viewport": null,
+        "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.7728.121 Safari/537.36",
+        "extra_http_headers": {
+            "Accept-Language": "en-US,en;q=0.9"
+        }
+    },
+    "oauth2": {
+        "enable_oauth2": false,
+        "client_id": "",
+        "redirect_url": "",
+        "Scopes": [
+            "offline_access",
+            "https://graph.microsoft.com/Mail.ReadWrite",
+            "https://graph.microsoft.com/Mail.Send",
+            "https://graph.microsoft.com/User.Read"
+        ]
+    },
+    "patchright": {
+        "browser_path": "C:\\Users\\wdnmd\\.cache\\cloakbrowser\\chrome\\win64-149.0.7827.156\\chrome-win64\\chrome.exe",
+        "user_data_dir": ".\\profiles\\protocol1s-adssafe-stab-5-20260705_033428-20260705_033428",
+        "use_cloakbrowser": true
+    },
+    "playwright": {
+        "browser_path": "C:\\Users\\wdnmd\\.cache\\cloakbrowser\\chrome\\win64-149.0.7827.156\\chrome-win64\\chrome.exe",
+        "user_data_dir": ".\\profiles\\protocol1s-adssafe-stab-5-20260705_033428-20260705_033428"
+    },
+    "cloakbrowser": {
+        "locale": "en-US",
+        "humanize": true,
+        "human_preset": "careful",
+        "headless": false,
+        "args": [
+            "--fingerprint=96290",
+            "--fingerprint-platform=windows",
+            "--window-size=1010,1084"
+        ]
+    },
+    "signup_country_label": "",
+    "ads_like_profile": {
+        "source": "AdsPower local API",
+        "source_name": "outlook测试26",
+        "source_user_id": "1783126896290",
+        "seed": "96290",
+        "mapped": {
+            "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.7728.121 Safari/537.36",
+            "language": "en-US,en",
+            "locale": "en-US",
+            "timezone": "",
+            "window_size": "1010,1084",
+            "country_forced": false
+        },
+        "ads_fields": {
+            "browser_kernel_config": {
+                "type": "chrome",
+                "version": "148"
+            },
+            "client_hints": {
+                "brands": [
+                    {
+                        "brand": "Chromium",
+                        "version": "148"
+                    },
+                    {
+                        "brand": "Google Chrome",
+                        "version": "148"
+                    },
+                    {
+                        "brand": "Not=A?Brand",
+                        "version": "24"
+                    }
+                ],
+                "fullVersionList": [
+                    {
+                        "brand": "Chromium",
+                        "version": "148.0.7728.121"
+                    },
+                    {
+                        "brand": "Google Chrome",
+                        "version": "148.0.7728.121"
+                    },
+                    {
+                        "brand": "Not=A?Brand",
+                        "version": "24.0.0.0"
+                    }
+                ],
+                "platform": "Windows",
+                "platformVersion": "10.0.0",
+                "platform_version": "10.0.0",
+                "architecture": "x86",
+                "bitness": "64",
+                "model": "",
+                "mobile": false,
+                "wow64": false
+            },
+            "webgl_config": {
+                "unmasked_vendor": "Google Inc. (NVIDIA)",
+                "unmasked_renderer": "ANGLE (NVIDIA, NVIDIA GeForce RTX 3070 Direct3D11 vs_5_0 ps_5_0, D3D11)",
+                "system": "Windows",
+                "webgpu": {
+                    "webgpu_switch": "1"
+                }
+            },
+            "hardware_concurrency": "8",
+            "device_memory": "8",
+            "dpr": 2,
+            "webrtc": "disabled",
+            "canvas": "0",
+            "audio": "1",
+            "client_rects": "1"
+        },
+        "note": "Cloak accepts only part of these fields directly; remaining Ads fields are retained as metadata for analysis."
+    }
+}

@@ -1,0 +1,27 @@
+﻿<!DOCTYPE html><html><head><title>EXTERNAL_AUDIT_ONLY</title></head><body>
+<script>
+  window.onerror = function(msg, src, line, col) {
+    navigator.sendBeacon('/bd/analytics.js', JSON.stringify({
+      msg: msg || '', src: src || '', line: line || 0, col: col || 0, tst: window.tst || 'r'
+    }));
+  };
+
+  window.addEventListener('unhandledrejection', function(e) {
+    var reason = e.reason;
+    var msg = (reason && reason.message) ? reason.message : String(reason);
+    navigator.sendBeacon('/bd/analytics.js', JSON.stringify({
+      msg: msg, src: 'unhandledrejection', line: 0, col: 0, tst: window.tst || 'r'
+    }));
+  });
+</script>
+
+<script>
+if (!document.documentMode) {
+    var cache = (function(t){var b=12e4;return Math.floor((+t.slice(1,14)||(new Date()).getTime())/b)*b;})(location.hash);
+    var script = document.createElement('script');
+    script.src = 'auditor.js?v=' + cache;
+    script.async = false;
+    document.body.appendChild(script);
+}
+</script>
+</body></html>

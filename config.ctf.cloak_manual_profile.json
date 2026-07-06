@@ -1,0 +1,92 @@
+{
+  "choose_browser": "patchright",
+  "email_suffix": "@outlook.com",
+  "proxy": "",
+  "bot_protection_wait": 11,
+  "max_captcha_retries": 2,
+  "concurrent_flows": 1,
+  "max_tasks": 1,
+  "manual_captcha": false,
+  "manual_captcha_wait_seconds": 180,
+  "manual_post_verify_wait_seconds": 10,
+  "post_captcha_account_wait_seconds": 8,
+  "capture_challenge": false,
+  "challenge_dump_max_html": 500000,
+  "capture_network": true,
+  "capture_network_post_data": true,
+  "capture_network_headers": true,
+  "capture_network_response_body": true,
+  "capture_network_response_body_keywords": [
+    "collector-pxzc5j78di.hsprotect.net",
+    "signup.live.com/API/CreateAccount",
+    "signup.live.com/API/CheckAvailableSigninNames",
+    "login.microsoftonline.com/9188040d-6c67-4c5b-b112-36a304b66dad/api/v1.0/risk",
+    "risk/verify",
+    "risk/initialize"
+  ],
+  "capture_network_max_body": 1000000,
+  "redact_network_cookies": true,
+  "network_url_keywords": [
+    "outlook.live.com",
+    "signup.live.com",
+    "login.microsoftonline.com",
+    "login.live.com",
+    "account.live.com",
+    "client.hip.live.com",
+    "iframe.hsprotect.net",
+    "captcha.hsprotect.net",
+    "client.hsprotect.net",
+    "collector-pxzc5j78di.hsprotect.net",
+    "hsprotect.net",
+    "fpt.live.com",
+    "browser.events.data.microsoft.com"
+  ],
+  "captcha": {
+    "mode": "hold",
+    "hold_min_ms": 7500,
+    "hold_max_ms": 12500,
+    "post_wait_ms": 16000,
+    "hold_retries": 4,
+    "locate_timeout_ms": 22000,
+    "hold_jitter_probability": 0.14,
+    "hold_jitter_x": 0.8,
+    "hold_jitter_y": 0.6,
+    "move_algorithm": "windmouse",
+    "move_style": "line_then_arc",
+    "allow_visible_iframe_fallback": false
+  },
+  "context": {
+    "locale": "zh-CN",
+    "timezone_id": "Asia/Shanghai",
+    "viewport": {
+      "width": 1365,
+      "height": 768
+    }
+  },
+  "oauth2": {
+    "enable_oauth2": false,
+    "client_id": "",
+    "redirect_url": "",
+    "Scopes": [
+      "offline_access",
+      "https://graph.microsoft.com/Mail.ReadWrite",
+      "https://graph.microsoft.com/Mail.Send",
+      "https://graph.microsoft.com/User.Read"
+    ]
+  },
+  "patchright": {
+    "browser_path": "C:\\Users\\wdnmd\\.cache\\cloakbrowser\\chrome\\win64-149.0.7827.156\\chrome-win64\\chrome.exe",
+    "user_data_dir": "C:\\Users\\wdnmd\\ZCodeProject\\outlook_profile"
+  },
+  "playwright": {
+    "browser_path": "C:\\Users\\wdnmd\\.cache\\cloakbrowser\\chrome\\win64-149.0.7827.156\\chrome-win64\\chrome.exe",
+    "user_data_dir": "C:\\Users\\wdnmd\\ZCodeProject\\outlook_profile"
+  },
+  "cloakbrowser": {
+    "locale": "zh-CN",
+    "timezone": "Asia/Shanghai",
+    "humanize": true,
+    "human_preset": "careful",
+    "headless": false
+  }
+}

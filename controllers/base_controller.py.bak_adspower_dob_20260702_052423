@@ -1,0 +1,1993 @@
+import os
+import time
+import json
+import hashlib
+import random
+import threading
+from datetime import datetime
+from abc import ABC, abstractmethod
+from settings import load_config
+
+try:
+    from faker import Faker
+except ImportError:
+    Faker = None
+
+class BaseBrowserController(ABC):
+    """
+    所有浏览器通用的接口和共享逻辑
+    """
+
+    def __init__(self):
+        data = load_config()
+        self.wait_time = data['bot_protection_wait'] * 1000
+        self.max_captcha_retries = data['max_captcha_retries']
+        self.enable_oauth2 = data["oauth2"]['enable_oauth2']
+        self.proxy = data['proxy']
+        self.email_suffix = data['email_suffix']
+        self.context_options = data.get("context", {})
+        self.manual_captcha = data.get("manual_captcha", False)
+        self.manual_captcha_wait_seconds = data.get("manual_captcha_wait_seconds", 180)
+        self.manual_post_verify_wait_seconds = data.get("manual_post_verify_wait_seconds", 10)
+        self.post_captcha_account_wait_seconds = data.get("post_captcha_account_wait_seconds", 0)
+        self.signup_country_label = data.get("signup_country_label") or os.environ.get("OUTLOOK_SIGNUP_COUNTRY_LABEL", "")
+        self.no_js_input_fallback = bool(data.get("no_js_input_fallback", False))
+        self.capture_network = data.get("capture_network", False)
+        self.capture_network_post_data = data.get("capture_network_post_data", False)
+        self.capture_network_headers = data.get("capture_network_headers", False)
+        self.capture_network_response_body = data.get("capture_network_response_body", False)
+        self.capture_network_response_body_keywords = data.get("capture_network_response_body_keywords", [])
+        self.capture_network_max_body = data.get("capture_network_max_body", 200000)
+        self.redact_network_cookies = data.get("redact_network_cookies", True)
+        self.capture_challenge = data.get("capture_challenge", False)
+        self.challenge_dump_max_html = data.get("challenge_dump_max_html", 300000)
+        self.captcha_options = data.get("captcha", {})
+        self.learn_captcha_events = data.get("learn_captcha_events", False)
+        self.network_url_keywords = data.get("network_url_keywords", [
+            "signup.live.com",
+            "login.live.com",
+            "account.live.com",
+            "outlook.live.com",
+            "hsprotect.net",
+            "browser.events.data.microsoft.com"
+        ])
+
+        self.thread_local = threading.local()
+        self.cleanup_lock = threading.Lock()
+        self.active_resources = []  # 记录资源以便关闭
+        self.signup_network_lock = threading.Lock()
+        self.signup_network_state = {}
+
+        self.results_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'Results')
+        os.makedirs(self.results_dir, exist_ok=True)
+        self.diagnostics_dir = os.path.join(self.results_dir, "diagnostics")
+        os.makedirs(self.diagnostics_dir, exist_ok=True)
+        self.network_dir = os.path.join(self.results_dir, "network")
+        os.makedirs(self.network_dir, exist_ok=True)
+        self.challenge_dir = os.path.join(self.results_dir, "challenge")
+        os.makedirs(self.challenge_dir, exist_ok=True)
+        self.captcha_events_dir = os.path.join(self.results_dir, "captcha_events")
+        os.makedirs(self.captcha_events_dir, exist_ok=True)
+
+
+    @abstractmethod
+    def launch_browser(self):
+        """
+        获取浏览器实例,返回playwright_instance, browser_instance
+        """
+        pass
+
+    @abstractmethod
+    def handle_captcha(self, page):
+        """
+        验证码处理流程
+        """
+        pass
+
+    @abstractmethod 
+    def clean_up(self, page=None, type = "all_browser"):
+        """
+        清理自己创建的内容
+        一个是单进程结束后关闭进程，另一个是程序结束后清除所有内容
+        """
+        pass
+
+    @abstractmethod
+    def get_thread_page(self):
+        """
+        返回页面
+        """
+
+
+    def get_thread_browser(self):
+        """
+        通用逻辑:获取不同进程的浏览器
+        """
+
+        if not hasattr(self.thread_local,"browser"):
+
+            p, b  = self.launch_browser()
+            if not p:
+                return False
+
+            self.thread_local.playwright = p
+            self.thread_local.browser = b
+
+            with self.cleanup_lock:
+                self.active_resources.append((p, b))
+
+        return self.thread_local.browser
+
+    def save_diagnostic(self, page, tag, email=None):
+        """
+        保存失败点现场，方便区分：
+        - 自动化/指纹被识别
+        - IP/频率风控
+        - 选择器过期
+        - 验证码类型变化
+        """
+        if not page:
+            return
+
+        safe_email = (email or "unknown").replace("@", "_").replace(":", "_")
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        base = os.path.join(self.diagnostics_dir, f"{stamp}_{tag}_{safe_email}")
+
+        try:
+            page.screenshot(path=f"{base}.png", full_page=True)
+        except Exception:
+            pass
+
+        lines = []
+        try:
+            lines.append(f"url={page.url}")
+        except Exception:
+            pass
+        try:
+            lines.append(f"title={page.title()}")
+        except Exception:
+            pass
+        try:
+            text = page.locator("body").inner_text(timeout=2000)
+            lines.append("body_text_begin")
+            lines.append(text[:5000])
+            lines.append("body_text_end")
+        except Exception:
+            pass
+
+        if lines:
+            try:
+                with open(f"{base}.txt", "w", encoding="utf-8") as f:
+                    f.write("\n".join(lines))
+            except Exception:
+                pass
+
+    def _safe_email_for_filename(self, email=None):
+        return (email or "unknown").replace("@", "_").replace(":", "_").replace("\\", "_").replace("/", "_")
+
+    def _network_interesting(self, url):
+        return any(keyword in url for keyword in self.network_url_keywords)
+
+    def _filtered_headers(self, headers):
+        if not self.capture_network_headers or not headers:
+            return None
+        result = {}
+        for key, value in dict(headers).items():
+            lk = key.lower()
+            if self.redact_network_cookies and lk in {"cookie", "authorization", "x-ms-refreshtokencredential"}:
+                result[key] = "<redacted>"
+            else:
+                result[key] = value
+        return result
+
+    def _bounded_text(self, text):
+        if text is None:
+            return None
+        if len(text) <= self.capture_network_max_body:
+            return text
+        return text[:self.capture_network_max_body] + f"\n<truncated {len(text) - self.capture_network_max_body} chars>"
+
+    def attach_network_logger(self, page, email=None):
+        """
+        记录注册流程的请求顺序，为协议复现提供证据。
+
+        默认只记录关键域名；POST body/headers/response body 由配置开关控制。
+        日志仅落盘到 Results/network，不在控制台打印敏感内容。
+        """
+        if not self.capture_network or not page:
+            return None
+
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        safe_email = self._safe_email_for_filename(email)
+        log_path = os.path.join(self.network_dir, f"{stamp}_{safe_email}.jsonl")
+        lock = threading.Lock()
+        page_key = id(page)
+        with self.signup_network_lock:
+            self.signup_network_state[page_key] = {
+                "create_requests": 0,
+                "create_responses": [],
+                "create_success": False,
+            }
+
+        def note_create_account(kind, status=None):
+            try:
+                with self.signup_network_lock:
+                    state = self.signup_network_state.setdefault(page_key, {
+                        "create_requests": 0,
+                        "create_responses": [],
+                        "create_success": False,
+                    })
+                    if kind == "request":
+                        state["create_requests"] = int(state.get("create_requests") or 0) + 1
+                    elif kind == "response":
+                        state.setdefault("create_responses", []).append(status)
+                        if int(status or 0) == 200:
+                            state["create_success"] = True
+            except Exception:
+                pass
+
+        def write_event(record):
+            with lock:
+                with open(log_path, "a", encoding="utf-8") as f:
+                    f.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+        def get_post_data(request):
+            try:
+                data = request.post_data
+            except Exception:
+                try:
+                    data = request.post_data()
+                except Exception:
+                    data = None
+            if not data:
+                return None
+
+            if self.capture_network_post_data:
+                return {
+                    "post_data": self._bounded_text(data),
+                    "post_data_len": len(data),
+                    "post_data_sha256": hashlib.sha256(data.encode("utf-8", errors="ignore")).hexdigest()
+                }
+            return {
+                "post_data": "<redacted>",
+                "post_data_len": len(data),
+                "post_data_sha256": hashlib.sha256(data.encode("utf-8", errors="ignore")).hexdigest()
+            }
+
+        def on_request(request):
+            try:
+                url = request.url
+                if not self._network_interesting(url):
+                    return
+                if request.method == "POST" and "signup.live.com/API/CreateAccount" in url:
+                    note_create_account("request")
+                record = {
+                    "ts": datetime.now().isoformat(),
+                    "event": "request",
+                    "method": request.method,
+                    "url": url,
+                    "resource_type": getattr(request, "resource_type", None),
+                }
+                headers = self._filtered_headers(getattr(request, "headers", None))
+                if headers is not None:
+                    record["headers"] = headers
+                post_data = get_post_data(request)
+                if post_data is not None:
+                    record.update(post_data)
+                write_event(record)
+            except Exception as exc:
+                write_event({
+                    "ts": datetime.now().isoformat(),
+                    "event": "logger_error",
+                    "where": "request",
+                    "error": repr(exc)
+                })
+
+        def on_response(response):
+            try:
+                request = response.request
+                url = response.url
+                if not self._network_interesting(url):
+                    return
+                if request.method == "POST" and "signup.live.com/API/CreateAccount" in url:
+                    note_create_account("response", response.status)
+                record = {
+                    "ts": datetime.now().isoformat(),
+                    "event": "response",
+                    "method": request.method,
+                    "url": url,
+                    "status": response.status,
+                }
+                headers = self._filtered_headers(getattr(response, "headers", None))
+                if headers is not None:
+                    record["headers"] = headers
+                should_capture_body = self.capture_network_response_body
+                if should_capture_body and self.capture_network_response_body_keywords:
+                    should_capture_body = any(keyword in url for keyword in self.capture_network_response_body_keywords)
+                if should_capture_body:
+                    try:
+                        body = response.text()
+                        record["body"] = self._bounded_text(body)
+                        record["body_len"] = len(body)
+                        record["body_sha256"] = hashlib.sha256(body.encode("utf-8", errors="ignore")).hexdigest()
+                    except Exception as exc:
+                        record["body_error"] = repr(exc)
+                write_event(record)
+            except Exception as exc:
+                write_event({
+                    "ts": datetime.now().isoformat(),
+                    "event": "logger_error",
+                    "where": "response",
+                    "error": repr(exc)
+                })
+
+        page.on("request", on_request)
+        page.on("response", on_response)
+        print(f"[Trace] - network log: {log_path}")
+        return log_path
+
+    def get_create_account_state(self, page):
+        try:
+            with self.signup_network_lock:
+                return dict(self.signup_network_state.get(id(page), {}))
+        except Exception:
+            return {}
+
+    def wait_for_create_account_success(self, page, timeout_ms=25000):
+        """
+        防止把“验证码 iframe 消失/未出现”误判成注册完成。
+        真正完成需要看到 signup.live.com/API/CreateAccount 的 200 响应。
+        """
+        if not self.capture_network:
+            return True, {"reason": "network_capture_disabled"}
+        deadline = time.time() + max(1000, int(timeout_ms or 0)) / 1000
+        last = {}
+        while time.time() < deadline:
+            last = self.get_create_account_state(page)
+            if last.get("create_success"):
+                return True, last
+            page.wait_for_timeout(350)
+        return False, last
+
+    def save_challenge_snapshot(self, page, email=None, tag="challenge"):
+        """
+        保存验证码阶段现场：
+        - 整页截图
+        - iframe 列表及坐标
+        - page/frame HTML
+        - frame URL/name 等元数据
+        """
+        if not page:
+            return None
+
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        safe_email = self._safe_email_for_filename(email)
+        base_dir = os.path.join(self.challenge_dir, f"{stamp}_{tag}_{safe_email}")
+        os.makedirs(base_dir, exist_ok=True)
+
+        meta = {
+            "ts": datetime.now().isoformat(),
+            "tag": tag,
+            "email": email,
+            "page_url": None,
+            "page_title": None,
+            "iframes": [],
+            "frames": [],
+        }
+
+        try:
+            meta["page_url"] = page.url
+        except Exception:
+            pass
+        try:
+            meta["page_title"] = page.title()
+        except Exception:
+            pass
+
+        try:
+            page.screenshot(path=os.path.join(base_dir, "page.png"), full_page=True)
+        except Exception as exc:
+            meta["page_screenshot_error"] = repr(exc)
+
+        try:
+            page_html = page.content()
+            if len(page_html) > self.challenge_dump_max_html:
+                page_html = page_html[:self.challenge_dump_max_html] + "\n<!-- truncated -->"
+            with open(os.path.join(base_dir, "page.html"), "w", encoding="utf-8") as f:
+                f.write(page_html)
+        except Exception as exc:
+            meta["page_html_error"] = repr(exc)
+
+        try:
+            iframe_infos = page.locator("iframe").evaluate_all(
+                """els => els.map((el, idx) => {
+                    const r = el.getBoundingClientRect();
+                    return {
+                        idx,
+                        src: el.src || el.getAttribute('src'),
+                        title: el.title || el.getAttribute('title'),
+                        id: el.id || null,
+                        name: el.name || el.getAttribute('name'),
+                        ariaLabel: el.getAttribute('aria-label'),
+                        className: el.className || null,
+                        style: el.getAttribute('style'),
+                        rect: {x: r.x, y: r.y, width: r.width, height: r.height}
+                    };
+                })"""
+            )
+            meta["iframes"] = iframe_infos
+        except Exception as exc:
+            meta["iframe_list_error"] = repr(exc)
+
+        try:
+            iframe_count = page.locator("iframe").count()
+            for idx in range(min(iframe_count, 12)):
+                try:
+                    page.locator("iframe").nth(idx).screenshot(path=os.path.join(base_dir, f"iframe_{idx}.png"))
+                except Exception as exc:
+                    meta.setdefault("iframe_screenshot_errors", []).append({"idx": idx, "error": repr(exc)})
+        except Exception:
+            pass
+
+        try:
+            for idx, frame in enumerate(page.frames):
+                frame_meta = {
+                    "idx": idx,
+                    "name": None,
+                    "url": None,
+                    "html_file": None,
+                    "html_error": None,
+                }
+                try:
+                    frame_meta["name"] = frame.name
+                except Exception:
+                    pass
+                try:
+                    frame_meta["url"] = frame.url
+                except Exception:
+                    pass
+                try:
+                    html = frame.content()
+                    if len(html) > self.challenge_dump_max_html:
+                        html = html[:self.challenge_dump_max_html] + "\n<!-- truncated -->"
+                    frame_file = f"frame_{idx}.html"
+                    with open(os.path.join(base_dir, frame_file), "w", encoding="utf-8") as f:
+                        f.write(html)
+                    frame_meta["html_file"] = frame_file
+                except Exception as exc:
+                    frame_meta["html_error"] = repr(exc)
+                meta["frames"].append(frame_meta)
+        except Exception as exc:
+            meta["frames_error"] = repr(exc)
+
+        with open(os.path.join(base_dir, "meta.json"), "w", encoding="utf-8") as f:
+            json.dump(meta, f, ensure_ascii=False, indent=2)
+
+        print(f"[Challenge] - snapshot saved: {base_dir}")
+        return base_dir
+
+    def attach_captcha_event_logger(self, page, email=None):
+        """
+        手动学习模式：在所有 frame 中安装 pointer/mouse/touch 事件记录器。
+        用户手动长按后，事件会经 console 回传并落盘，用来拟合自动化长按参数。
+        """
+        if not self.learn_captcha_events or not page:
+            return None
+
+        events = []
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        safe_email = self._safe_email_for_filename(email)
+        log_path = os.path.join(self.captcha_events_dir, f"{stamp}_{safe_email}.jsonl")
+        prefix = "__CAPTCHA_EVENT__"
+        lock = threading.Lock()
+
+        def get_msg_text(msg):
+            try:
+                text = msg.text
+                if callable(text):
+                    text = text()
+                return text
+            except Exception:
+                try:
+                    return msg.text()
+                except Exception:
+                    return ""
+
+        def on_console(msg):
+            text = get_msg_text(msg)
+            if not text or not text.startswith(prefix):
+                return
+            payload = text[len(prefix):]
+            try:
+                record = json.loads(payload)
+            except Exception:
+                record = {"raw": payload}
+            record["recv_ts"] = datetime.now().isoformat()
+            with lock:
+                events.append(record)
+                with open(log_path, "a", encoding="utf-8") as f:
+                    f.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+        page.on("console", on_console)
+
+        recorder_script = r"""
+        (() => {
+          if (window.__captchaRecorderInstalled) return "already";
+          window.__captchaRecorderInstalled = true;
+          const emit = (e) => {
+            try {
+              const t = e.target;
+              const r = t && t.getBoundingClientRect ? t.getBoundingClientRect() : null;
+              const doc = document;
+              const payload = {
+                type: e.type,
+                now: Date.now(),
+                perfNow: (typeof performance !== "undefined" ? performance.now() : null),
+                url: location.href,
+                clientX: e.clientX ?? null,
+                clientY: e.clientY ?? null,
+                screenX: e.screenX ?? null,
+                screenY: e.screenY ?? null,
+                pageX: e.pageX ?? null,
+                pageY: e.pageY ?? null,
+                button: e.button ?? null,
+                buttons: e.buttons ?? null,
+                pointerType: e.pointerType ?? null,
+                isTrusted: e.isTrusted,
+                target: t ? {
+                  tag: t.tagName,
+                  id: t.id || null,
+                  role: t.getAttribute ? t.getAttribute("role") : null,
+                  aria: t.getAttribute ? t.getAttribute("aria-label") : null,
+                  text: (t.innerText || t.textContent || "").slice(0, 120),
+                  rect: r ? {x: r.x, y: r.y, width: r.width, height: r.height} : null
+                } : null,
+                viewport: {width: innerWidth, height: innerHeight},
+                active: doc.activeElement ? {
+                  tag: doc.activeElement.tagName,
+                  id: doc.activeElement.id || null,
+                  role: doc.activeElement.getAttribute ? doc.activeElement.getAttribute("role") : null
+                } : null
+              };
+              console.log("__CAPTCHA_EVENT__" + JSON.stringify(payload));
+            } catch (err) {
+              console.log("__CAPTCHA_EVENT__" + JSON.stringify({type:"recorder_error", error:String(err)}));
+            }
+          };
+          ["pointerdown","pointermove","pointerup","pointercancel","mousedown","mousemove","mouseup","touchstart","touchmove","touchend","keydown","keyup"].forEach(
+            type => document.addEventListener(type, emit, true)
+          );
+          return "installed";
+        })();
+        """
+
+        installed = 0
+        for frame in page.frames:
+            try:
+                frame.evaluate(recorder_script)
+                installed += 1
+            except Exception:
+                pass
+
+        print(f"[Learn] - captcha event logger installed in {installed} frames: {log_path}")
+
+        def finalize():
+            summary_path = log_path + ".summary.json"
+            summary = {
+                "event_count": len(events),
+                "log_path": log_path,
+                "created_at": stamp,
+                "email": email,
+            }
+            try:
+                down_events = [e for e in events if e.get("type") in ("pointerdown", "mousedown", "touchstart")]
+                up_events = [e for e in events if e.get("type") in ("pointerup", "mouseup", "touchend", "pointercancel")]
+                if down_events and up_events:
+                    first_down = down_events[0]
+                    last_up = up_events[-1]
+                    if first_down.get("perfNow") is not None and last_up.get("perfNow") is not None:
+                        summary["hold_ms"] = last_up["perfNow"] - first_down["perfNow"]
+                    summary["first_down"] = first_down
+                    summary["last_up"] = last_up
+            except Exception as exc:
+                summary["summary_error"] = repr(exc)
+
+            with open(summary_path, "w", encoding="utf-8") as f:
+                json.dump(summary, f, ensure_ascii=False, indent=2)
+            print(f"[Learn] - captcha event summary: {summary_path}")
+            return summary_path
+
+        return finalize
+
+    def outlook_register(self, page, email, password):
+        """
+        通用逻辑:注册邮箱
+        """
+
+        if Faker:
+            fake = Faker()
+            lastname = fake.last_name()
+            firstname = fake.first_name()
+        else:
+            # CTF/offline fallback: keep the flow usable when faker is not
+            # installed in the sandbox. Outlook accepts simple latin names.
+            lastname = random.choice(["Smith", "Johnson", "Williams", "Brown", "Jones"])
+            firstname = random.choice(["Alex", "Chris", "Taylor", "Jordan", "Morgan"])
+        year = str(random.randint(1960, 2005))
+        # The current Fluent DOB form can intermittently reset the day combo
+        # after month/year changes.  Keep month/day simple and stable for live
+        # protocol tests so we do not burn IPs on a front-end form race.
+        month = "1"
+        day = "1"
+        self.attach_network_logger(page, email)
+
+        def signup_email_entry_visible(timeout=1000):
+            """True when the first signup page is already showing the email-name field.
+
+            JA-JP and other localized pages can skip the Chinese "同意并继续"
+            gate and land directly on "Microsoft アカウントの作成".  Treat that
+            as a valid entry instead of burning the run as an IP failure.
+            """
+            try:
+                page.wait_for_function(
+                    """() => {
+                        const visible = (el) => {
+                            if (!el) return false;
+                            const r = el.getBoundingClientRect?.();
+                            const s = getComputedStyle(el);
+                            return !!r && r.width > 0 && r.height > 0 &&
+                                s.visibility !== 'hidden' && s.display !== 'none';
+                        };
+                        const inputs = [...document.querySelectorAll('input')]
+                            .filter(visible)
+                            .filter(el => {
+                                const type = String(el.getAttribute('type') || 'text').toLowerCase();
+                                if (['hidden', 'password', 'checkbox', 'radio', 'submit', 'button'].includes(type)) return false;
+                                const meta = [
+                                    el.name, el.id, el.getAttribute('aria-label'),
+                                    el.getAttribute('placeholder'), el.autocomplete
+                                ].filter(Boolean).join(' ').toLowerCase();
+                                return /mail|email|member|sign|login|メール|アドレス|電子|邮箱|郵箱|邮件|郵件/.test(meta) ||
+                                    document.body.innerText.includes('@outlook.');
+                            });
+                        return inputs.length > 0 && document.body.innerText.includes('@outlook');
+                    }""",
+                    timeout=timeout,
+                )
+                return True
+            except Exception:
+                return False
+
+        def accept_initial_consent_gate(timeout_ms=30000):
+            """Click the first Microsoft consent/transfer gate on a fresh profile."""
+            deadline = time.time() + max(1000, int(timeout_ms)) / 1000
+            while time.time() < deadline:
+                if signup_email_entry_visible(timeout=500):
+                    return True
+                try:
+                    clicked = page.evaluate(
+                        r"""() => {
+                            const visible = (el) => {
+                                if (!el) return false;
+                                const r = el.getBoundingClientRect?.();
+                                const s = getComputedStyle(el);
+                                return !!r && r.width > 0 && r.height > 0 &&
+                                    s.visibility !== 'hidden' && s.display !== 'none' &&
+                                    !el.disabled && el.getAttribute('aria-disabled') !== 'true';
+                            };
+                            const norm = (s) => String(s || '').replace(/\s+/g, '').toLowerCase();
+                            const fire = (el) => {
+                                try { el.scrollIntoView({block:'center', inline:'center'}); } catch (_) {}
+                                try { el.focus?.(); } catch (_) {}
+                                try { el.dispatchEvent(new MouseEvent('mouseover', {bubbles:true})); } catch (_) {}
+                                try { el.dispatchEvent(new MouseEvent('mousedown', {bubbles:true})); } catch (_) {}
+                                try { el.click(); } catch (_) {}
+                                try { el.dispatchEvent(new MouseEvent('mouseup', {bubbles:true})); } catch (_) {}
+                            };
+                            const primary = document.querySelector('[data-testid="primaryButton"]');
+                            if (visible(primary)) {
+                                fire(primary);
+                                return 'primaryButton';
+                            }
+                            const allow = ['\u540c\u610f', '\u7ee7\u7eed', 'accept', 'agree', 'continue'];
+                            const deny = ['\u62d2\u7edd', 'decline', 'reject', 'exit'];
+                            const nodes = [...document.querySelectorAll(
+                                'button,[role="button"],input[type="button"],input[type="submit"]'
+                            )].filter(visible);
+                            for (const el of nodes) {
+                                const text = norm(el.innerText || el.value || el.getAttribute('aria-label') || el.textContent);
+                                if (!text) continue;
+                                if (deny.some(x => text.includes(x))) continue;
+                                if (allow.some(x => text.includes(x))) {
+                                    fire(el);
+                                    return text.slice(0, 80);
+                                }
+                            }
+                            return '';
+                        }"""
+                    )
+                    if clicked:
+                        page.wait_for_timeout(1200)
+                        continue
+                except Exception:
+                    pass
+                try:
+                    page.wait_for_timeout(500)
+                except Exception:
+                    time.sleep(0.5)
+            return signup_email_entry_visible(timeout=1000)
+
+        start_time = time.time()
+        try:
+            page.goto("https://outlook.live.com/mail/0/?prompt=create_account", timeout=20000, wait_until="domcontentloaded")
+            if not signup_email_entry_visible(timeout=2500):
+                start_time = time.time()
+                page.wait_for_timeout(0.1 * self.wait_time)
+                accept_initial_consent_gate(timeout_ms=30000)
+                signup_email_entry_visible(timeout=15000)
+        except:
+            if not signup_email_entry_visible(timeout=1500):
+                print("[Error: IP] - IP质量不佳，无法进入注册界面。")
+                self.save_diagnostic(page, "entry_failed", email)
+                return False
+
+        try:
+            def click_primary_button(timeout=10000):
+                try:
+                    page.locator('[data-testid="primaryButton"]').click(timeout=timeout)
+                    return True
+                except Exception:
+                    # CloakBrowser humanization can make Playwright report a
+                    # click timeout even though the page accepts it a moment
+                    # later.  Fire the DOM click as a fallback and let the next
+                    # explicit page-state wait decide whether it worked.
+                    try:
+                        return bool(page.evaluate(
+                            """() => {
+                                const btn = document.querySelector('[data-testid="primaryButton"]');
+                                if (!btn) return false;
+                                btn.click();
+                                return true;
+                            }"""
+                        ))
+                    except Exception:
+                        return False
+
+            def hs_challenge_visible():
+                selectors = [
+                    'iframe[src*="iframe.hsprotect.net"][src*="ch_ctx=1"]',
+                    'iframe[title="验证质询"]',
+                    'iframe#enforcementFrame',
+                ]
+                for selector in selectors:
+                    try:
+                        if page.locator(selector).count() > 0:
+                            return True
+                    except Exception:
+                        continue
+                return False
+
+            def create_account_requested_or_done():
+                state = self.get_create_account_state(page)
+                return bool(state.get("create_success") or int(state.get("create_requests") or 0) > 0)
+
+            def wait_after_name_submit(timeout_ms=12000):
+                deadline = time.time() + max(1000, int(timeout_ms or 0)) / 1000
+                left_name_seen_at = None
+                while time.time() < deadline:
+                    if create_account_requested_or_done():
+                        return "create_account"
+                    if hs_challenge_visible():
+                        return "challenge"
+                    if page.get_by_text('账户创建已被阻止').count() or page.get_by_text('一些异常活动').count():
+                        return "blocked"
+                    try:
+                        if page.locator('#lastNameInput').count() == 0 and page.locator('#firstNameInput').count() == 0:
+                            if left_name_seen_at is None:
+                                left_name_seen_at = time.time()
+                            # Leaving the name page usually precedes the
+                            # ch_ctx=1 hsprotect iframe by 1-3s.  Do not start
+                            # captcha automation against the old non-challenge
+                            # iframe too early.
+                            if time.time() - left_name_seen_at >= 10.0:
+                                return "left_name_page"
+                        else:
+                            left_name_seen_at = None
+                    except Exception:
+                        if left_name_seen_at is None:
+                            left_name_seen_at = time.time()
+                        if time.time() - left_name_seen_at >= 10.0:
+                            return "left_name_page"
+                    page.wait_for_timeout(350)
+                return "timeout"
+
+            def set_email_suffix(suffix):
+                suffix = str(suffix or "").strip()
+                if not suffix:
+                    return {"ok": False, "reason": "empty"}
+                try:
+                    opened = page.evaluate(
+                        """(suffix) => {
+                            const visible = (el) => {
+                                if (!el) return false;
+                                const r = el.getBoundingClientRect?.();
+                                const s = getComputedStyle(el);
+                                return !!r && r.width > 0 && r.height > 0 &&
+                                    s.visibility !== 'hidden' && s.display !== 'none';
+                            };
+                            const clean = (s) => String(s || '').replace(/\\s+/g, ' ').trim();
+                            const clickNative = (el) => {
+                                el.scrollIntoView({block: 'center', inline: 'center'});
+                                el.dispatchEvent(new MouseEvent('mouseover', {bubbles: true}));
+                                el.dispatchEvent(new MouseEvent('mousedown', {bubbles: true}));
+                                el.click();
+                                el.dispatchEvent(new MouseEvent('mouseup', {bubbles: true}));
+                            };
+                            const textOf = (el) => clean([
+                                el.innerText, el.textContent, el.getAttribute('aria-label'),
+                                el.getAttribute('title'), el.value
+                            ].filter(Boolean).join(' '));
+                            for (const sel of [...document.querySelectorAll('select')].filter(visible)) {
+                                const opts = [...(sel.options || [])];
+                                const match = opts.find(o => clean(o.textContent) === suffix || String(o.value || '') === suffix);
+                                if (match) {
+                                    const previous = sel.value;
+                                    const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')?.set;
+                                    if (setter) setter.call(sel, match.value); else sel.value = match.value;
+                                    try { sel._valueTracker && sel._valueTracker.setValue(previous); } catch (_) {}
+                                    sel.dispatchEvent(new Event('input', {bubbles: true}));
+                                    sel.dispatchEvent(new Event('change', {bubbles: true}));
+                                    sel.dispatchEvent(new Event('blur', {bubbles: true}));
+                                    return {ok: true, via: 'select', text: clean(match.textContent), value: sel.value};
+                                }
+                            }
+                            const controls = [...document.querySelectorAll(
+                                'button, [role="button"], [role="combobox"], [aria-haspopup], [data-testid]'
+                            )].filter(visible);
+                            const exact = controls.find(el => textOf(el) === suffix);
+                            if (exact) return {ok: true, via: 'already', text: textOf(exact)};
+                            const current = controls.find(el => /@outlook\\.|@hotmail\\./i.test(textOf(el)));
+                            if (!current) return {ok: false, reason: 'suffix_control_not_found', visible: controls.map(textOf).filter(Boolean).slice(0, 20)};
+                            clickNative(current);
+                            return {ok: true, via: 'opened', current: textOf(current)};
+                        }""",
+                        suffix,
+                    )
+                    if isinstance(opened, dict) and opened.get("via") == "opened":
+                        page.wait_for_timeout(450)
+                        chosen = page.evaluate(
+                            """(suffix) => {
+                                const visible = (el) => {
+                                    if (!el) return false;
+                                    const r = el.getBoundingClientRect?.();
+                                    const s = getComputedStyle(el);
+                                    return !!r && r.width > 0 && r.height > 0 &&
+                                        s.visibility !== 'hidden' && s.display !== 'none';
+                                };
+                                const clean = (s) => String(s || '').replace(/\\s+/g, ' ').trim();
+                                const textOf = (el) => clean(el.innerText || el.textContent || el.getAttribute('aria-label') || el.value || '');
+                                const nodes = [...document.querySelectorAll('[role="option"], [role="menuitem"], button, div, span')]
+                                    .filter(visible);
+                                const match = nodes.find(el => textOf(el) === suffix) ||
+                                    nodes.find(el => textOf(el).includes(suffix));
+                                if (!match) return {ok: false, reason: 'suffix_option_not_found', visible: nodes.map(textOf).filter(Boolean).slice(0, 30)};
+                                match.scrollIntoView({block: 'center', inline: 'center'});
+                                match.dispatchEvent(new MouseEvent('mouseover', {bubbles: true}));
+                                match.dispatchEvent(new MouseEvent('mousedown', {bubbles: true}));
+                                match.click();
+                                match.dispatchEvent(new MouseEvent('mouseup', {bubbles: true}));
+                                return {ok: true, text: textOf(match)};
+                            }""",
+                            suffix,
+                        )
+                        if isinstance(chosen, dict) and chosen.get("ok"):
+                            return chosen
+                        opened["option_result"] = chosen
+                    return opened
+                except Exception as exc:
+                    return {"ok": False, "reason": repr(exc)[:180]}
+
+            def fill_signup_email(value):
+                value = str(value or "")
+                try:
+                    return page.evaluate(
+                        """(value) => {
+                            const visible = (el) => {
+                                if (!el) return false;
+                                const r = el.getBoundingClientRect?.();
+                                const s = getComputedStyle(el);
+                                return !!r && r.width > 0 && r.height > 0 &&
+                                    s.visibility !== 'hidden' && s.display !== 'none';
+                            };
+                            const score = (el) => {
+                                const meta = [
+                                    el.name, el.id, el.getAttribute('aria-label'),
+                                    el.getAttribute('placeholder'), el.autocomplete,
+                                    el.closest('label')?.innerText
+                                ].filter(Boolean).join(' ').toLowerCase();
+                                let s = 0;
+                                if (/member|signin|login|email|mail|メール|アドレス|電子|邮箱|郵箱|邮件|郵件/.test(meta)) s += 20;
+                                if (/birth|year|month|day|first|last|name|country|region|password/.test(meta)) s -= 50;
+                                const r = el.getBoundingClientRect();
+                                s += Math.max(0, 600 - Math.abs(r.top - 350)) / 100;
+                                return s;
+                            };
+                            const candidates = [...document.querySelectorAll('input')]
+                                .filter(visible)
+                                .filter(el => {
+                                    const type = String(el.getAttribute('type') || 'text').toLowerCase();
+                                    return !['hidden', 'password', 'checkbox', 'radio', 'submit', 'button'].includes(type);
+                                })
+                                .sort((a, b) => score(b) - score(a));
+                            const el = candidates[0];
+                            if (!el) return {ok: false, reason: 'email_input_not_found'};
+                            el.scrollIntoView({block: 'center', inline: 'center'});
+                            el.focus();
+                            const previous = el.value;
+                            const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+                            if (setter) setter.call(el, value); else el.value = value;
+                            try { el._valueTracker && el._valueTracker.setValue(previous); } catch (_) {}
+                            el.dispatchEvent(new InputEvent('input', {bubbles: true, inputType: 'insertText', data: value}));
+                            el.dispatchEvent(new Event('change', {bubbles: true}));
+                            el.dispatchEvent(new Event('blur', {bubbles: true}));
+                            return {
+                                ok: String(el.value || '') === value,
+                                value: el.value,
+                                name: el.name || '',
+                                id: el.id || '',
+                                aria: el.getAttribute('aria-label') || '',
+                                placeholder: el.getAttribute('placeholder') || ''
+                            };
+                        }""",
+                        value,
+                    )
+                except Exception as exc:
+                    return {"ok": False, "reason": repr(exc)[:180]}
+
+            def set_email_suffix_trusted(suffix):
+                suffix = str(suffix or "").strip()
+                if not suffix:
+                    return {"ok": False, "reason": "empty"}
+                try:
+                    if page.get_by_text(suffix, exact=True).count() > 0:
+                        return {"ok": True, "via": "already_visible"}
+                except Exception:
+                    pass
+                for current in ["@outlook.com", "@outlook.jp", "@hotmail.com"]:
+                    if current == suffix:
+                        continue
+                    try:
+                        loc = page.get_by_text(current, exact=True)
+                        if loc.count() <= 0:
+                            continue
+                        first = loc.first() if callable(getattr(loc, "first", None)) else loc.first
+                        first.click(timeout=3500)
+                        page.wait_for_timeout(350)
+                        opt = page.get_by_text(suffix, exact=True)
+                        if opt.count() > 0:
+                            opt_first = opt.first() if callable(getattr(opt, "first", None)) else opt.first
+                            opt_first.click(timeout=3500)
+                            page.wait_for_timeout(250)
+                            return {"ok": True, "via": "trusted_text", "from": current, "to": suffix}
+                    except Exception:
+                        continue
+                return set_email_suffix(suffix)
+
+            def type_signup_email_trusted(value):
+                value = str(value or "")
+                selectors = [
+                    # Current Fluent signup builds have rotated names/data-testid
+                    # a few times. Keep the list broad but still restricted to
+                    # visible non-password input controls so score probes can
+                    # avoid the JS value-set fallback.
+                    'input[data-testid*="username" i]',
+                    'input[data-testid*="member" i]',
+                    'input[data-testid*="email" i]',
+                    'input[data-testid*="signin" i]',
+                    'input[autocomplete*="username" i]',
+                    'input[autocomplete*="email" i]',
+                    '[name*="MemberName" i]',
+                    '[name*="member" i]',
+                    '[name*="username" i]',
+                    '[name*="login" i]',
+                    '[name*="email" i]',
+                    '[id*="MemberName" i]',
+                    '[id*="member" i]',
+                    '[id*="username" i]',
+                    '[id*="email" i]',
+                    'input[type="email"]',
+                    'input[aria-label*="メール"]',
+                    'input[placeholder*="メール"]',
+                    'input[aria-label*="邮箱"]',
+                    'input[aria-label*="电子"]',
+                    'input[aria-label*="邮件"]',
+                    'input[placeholder*="邮箱"]',
+                    'input[placeholder*="电子"]',
+                    'input[placeholder*="邮件"]',
+                    'input[aria-label*="mail" i]',
+                    'input[aria-label*="email" i]',
+                    'input[placeholder*="mail" i]',
+                    'input[placeholder*="email" i]',
+                    'input[type="text"]',
+                    'input:not([type])',
+                ]
+                for selector in selectors:
+                    try:
+                        loc = page.locator(selector)
+                        if loc.count() <= 0:
+                            continue
+                        first = loc.first() if callable(getattr(loc, "first", None)) else loc.first
+                        first.wait_for(state="visible", timeout=2500)
+                        native_focus = False
+                        try:
+                            first.click(timeout=3500)
+                        except Exception as click_exc:
+                            if "Viewport size not available" not in repr(click_exc):
+                                raise
+                            # Cloak native-window mode has no emulated viewport;
+                            # Playwright locator click/type can refuse to
+                            # compute coordinates.  Focus only, then use the
+                            # real keyboard path instead of setting .value.
+                            first.evaluate(
+                                """el => {
+                                    el.scrollIntoView({block:'center', inline:'center'});
+                                    el.focus();
+                                }"""
+                            )
+                            native_focus = True
+                        try:
+                            page.keyboard.press("Control+A")
+                            page.keyboard.press("Backspace")
+                        except Exception:
+                            try:
+                                first.fill("", timeout=1200)
+                            except Exception:
+                                pass
+                        try:
+                            if native_focus:
+                                page.keyboard.type(value, delay=max(8, 0.006 * self.wait_time))
+                            else:
+                                first.type(value, delay=max(8, 0.006 * self.wait_time), timeout=12000)
+                        except Exception as type_exc:
+                            if "Viewport size not available" not in repr(type_exc):
+                                raise
+                            first.evaluate(
+                                """el => {
+                                    el.scrollIntoView({block:'center', inline:'center'});
+                                    el.focus();
+                                }"""
+                            )
+                            page.keyboard.type(value, delay=max(8, 0.006 * self.wait_time))
+                        page.wait_for_timeout(250)
+                        try:
+                            if (first.input_value(timeout=1200) or "").strip() == value:
+                                return {"ok": True, "via": "trusted_type", "selector": selector}
+                        except Exception:
+                            return {"ok": True, "via": "trusted_type_unverified", "selector": selector}
+                    except Exception:
+                        continue
+                try:
+                    candidates = page.evaluate(
+                        """() => {
+                            const visible = (el) => {
+                                if (!el) return false;
+                                const r = el.getBoundingClientRect?.();
+                                const s = getComputedStyle(el);
+                                return !!r && r.width > 0 && r.height > 0 &&
+                                    s.visibility !== 'hidden' && s.display !== 'none';
+                            };
+                            return [...document.querySelectorAll('input')]
+                                .filter(visible)
+                                .filter(el => {
+                                    const type = String(el.getAttribute('type') || 'text').toLowerCase();
+                                    return !['hidden', 'password', 'checkbox', 'radio', 'submit', 'button'].includes(type);
+                                })
+                                .map((el, idx) => ({
+                                    idx,
+                                    type: el.getAttribute('type') || '',
+                                    name: el.name || '',
+                                    id: el.id || '',
+                                    dataTestid: el.getAttribute('data-testid') || '',
+                                    autocomplete: el.getAttribute('autocomplete') || '',
+                                    aria: el.getAttribute('aria-label') || '',
+                                    placeholder: el.getAttribute('placeholder') || '',
+                                    valueLen: String(el.value || '').length
+                                }))
+                                .slice(0, 12);
+                        }"""
+                    )
+                except Exception:
+                    candidates = []
+                return {"ok": False, "reason": "trusted_input_not_found", "candidates": candidates}
+
+            # The Microsoft data-export/consent gate can reappear or finish
+            # rendering after the first entry check.  If we try to type email
+            # while still on that gate, the generic input fallback burns a live
+            # node before captcha is reached.  Re-run the consent click and
+            # retry the email controls once before falling back to the legacy
+            # localized aria selector.
+            accept_initial_consent_gate(timeout_ms=8000)
+            suffix_result = {"ok": False, "reason": "not_attempted"}
+            email_result = {"ok": False, "reason": "not_attempted"}
+            for email_attempt in range(2):
+                if email_attempt:
+                    print("[Email] retry after consent gate", flush=True)
+                    accept_initial_consent_gate(timeout_ms=12000)
+                    signup_email_entry_visible(timeout=8000)
+                suffix_result = set_email_suffix_trusted(self.email_suffix)
+                if isinstance(suffix_result, dict) and not suffix_result.get("ok"):
+                    print(f"[Email] suffix target={self.email_suffix!r} result={suffix_result}", flush=True)
+                email_result = type_signup_email_trusted(email)
+                if isinstance(email_result, dict) and not email_result.get("ok"):
+                    if self.no_js_input_fallback:
+                        print(f"[Email] trusted type failed: {email_result}; JS fallback disabled", flush=True)
+                    else:
+                        print(f"[Email] trusted type failed: {email_result}; using JS fallback", flush=True)
+                        email_result = fill_signup_email(email)
+                if not (isinstance(email_result, dict) and not email_result.get("ok")):
+                    break
+            if isinstance(email_result, dict) and not email_result.get("ok"):
+                raise RuntimeError(f"email_input_not_found_after_consent_retry: {email_result}")
+            click_primary_button(timeout=12000)
+            page.wait_for_timeout(0.02 * self.wait_time)
+            last_password_error = None
+            for password_attempt in range(3):
+                try:
+                    page.wait_for_selector('[type="password"]', state="visible", timeout=12000)
+                    pwd = page.locator('[type="password"]').last
+                    native_viewport_focus = False
+                    try:
+                        pwd.click(timeout=6000)
+                    except Exception as click_exc:
+                        # Native CloakBrowser viewport mode can make
+                        # Playwright report "Viewport size not available" even
+                        # though the element is visible in the real window.
+                        # Keep the browser-native viewport and focus via DOM
+                        # instead of falling back to an emulated viewport.
+                        if "Viewport size not available" not in repr(click_exc):
+                            raise
+                        pwd.evaluate("(el) => { el.scrollIntoView({block:'center', inline:'center'}); el.focus(); }")
+                        native_viewport_focus = True
+                    if native_viewport_focus:
+                        page.keyboard.press("Control+A")
+                        page.keyboard.press("Backspace")
+                        page.keyboard.type(password, delay=max(8, 0.004 * self.wait_time))
+                    else:
+                        pwd.fill("")
+                        pwd.type(password, delay=0.004 * self.wait_time, timeout=10000)
+                    last_password_error = None
+                    break
+                except Exception as exc:
+                    last_password_error = exc
+                    print(f"[Password] type attempt {password_attempt + 1}/3 failed: {exc!r}", flush=True)
+                    page.wait_for_timeout(700 + password_attempt * 500)
+            if last_password_error is not None:
+                raise last_password_error
+            page.wait_for_timeout(0.02 * self.wait_time)
+            click_primary_button(timeout=12000)
+
+            page.wait_for_timeout(0.03 * self.wait_time)
+
+            def set_signup_country(label):
+                label = str(label or "").strip()
+                if not label:
+                    return {"ok": False, "reason": "empty"}
+                try:
+                    return page.evaluate(
+                        """(label) => {
+                            const visible = (el) => {
+                                if (!el) return false;
+                                const r = el.getBoundingClientRect?.();
+                                const s = getComputedStyle(el);
+                                return !!r && r.width > 0 && r.height > 0 &&
+                                    s.visibility !== 'hidden' && s.display !== 'none';
+                            };
+                            const clean = (s) => String(s || '').replace(/\\s+/g, ' ').trim();
+                            const textOf = (el) => [
+                                el.getAttribute('name'),
+                                el.id,
+                                el.getAttribute('aria-label'),
+                                el.getAttribute('placeholder'),
+                                el.getAttribute('data-testid'),
+                                el.closest('label')?.innerText,
+                                el.innerText,
+                                el.textContent
+                            ].filter(Boolean).join(' ').trim();
+                            const controls = [...document.querySelectorAll(
+                                'select, input, [role="combobox"], button[aria-haspopup], button'
+                            )].filter(visible);
+                            const countryRe = /(country|region|国家|地区|國家|地區)/i;
+                            let el =
+                                document.querySelector('[name*="Country" i], #countryDropdownId, #countryDropdown, [aria-label*="国家"], [aria-label*="地区"], [aria-label*="country" i]') ||
+                                controls.find(x => countryRe.test(textOf(x))) ||
+                                controls[0] ||
+                                null;
+                            if (!visible(el)) return {ok: false, reason: 'country_not_found', controls: controls.map(textOf).slice(0, 8)};
+
+                            if (String(el.tagName || '').toUpperCase() === 'SELECT') {
+                                const opts = [...(el.options || [])];
+                                const match = opts.find(opt => clean(opt.textContent) === label || clean(opt.textContent).includes(label) || String(opt.value || '') === label);
+                                if (!match) return {ok: false, reason: 'option_not_found', current: clean(el.options?.[el.selectedIndex]?.textContent || el.value || ''), options: opts.map(opt => clean(opt.textContent)).filter(Boolean).slice(0, 20)};
+                                const previous = el.value;
+                                const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')?.set;
+                                if (setter) setter.call(el, match.value);
+                                else el.value = match.value;
+                                try { el._valueTracker && el._valueTracker.setValue(previous); } catch (_) {}
+                                el.dispatchEvent(new Event('input', {bubbles: true}));
+                                el.dispatchEvent(new Event('change', {bubbles: true}));
+                                el.dispatchEvent(new Event('blur', {bubbles: true}));
+                                return {ok: true, via: 'select', value: el.value, text: clean(match.textContent)};
+                            }
+
+                            el.scrollIntoView({block: 'center', inline: 'center'});
+                            el.click();
+                            return {ok: true, via: 'opened', current: clean(textOf(el)).slice(0, 160)};
+                        }""",
+                        label,
+                    )
+                except Exception as exc:
+                    return {"ok": False, "reason": repr(exc)[:180]}
+
+            def click_country_option(label):
+                label = str(label or "").strip()
+                if not label:
+                    return {"ok": False, "reason": "empty"}
+                try:
+                    return page.evaluate(
+                        """(label) => {
+                            const visible = (el) => {
+                                if (!el) return false;
+                                const r = el.getBoundingClientRect?.();
+                                const s = getComputedStyle(el);
+                                return !!r && r.width > 0 && r.height > 0 &&
+                                    s.visibility !== 'hidden' && s.display !== 'none';
+                            };
+                            const clean = (s) => String(s || '').replace(/\\s+/g, ' ').trim();
+                            const optionSelectors = [
+                                '[role="option"]',
+                                '[role="menuitem"]',
+                                '[aria-selected]',
+                                '[role="listbox"] *',
+                                '[id*="option" i]',
+                                'div',
+                                'span',
+                                'button'
+                            ];
+                            const seen = new Set();
+                            const nodes = [];
+                            for (const sel of optionSelectors) {
+                                try {
+                                    for (const el of document.querySelectorAll(sel)) {
+                                        if (seen.has(el)) continue;
+                                        seen.add(el);
+                                        if (visible(el)) nodes.push(el);
+                                    }
+                                } catch (_) {}
+                            }
+                            const match = nodes.find(el => clean(el.innerText || el.textContent) === label) ||
+                                nodes.find(el => clean(el.innerText || el.textContent).includes(label));
+                            if (!match) return {ok: false, reason: 'option_not_found', visible: nodes.map(el => clean(el.innerText || el.textContent)).filter(Boolean).slice(0, 30)};
+                            match.scrollIntoView({block: 'center', inline: 'center'});
+                            match.click();
+                            return {ok: true, text: clean(match.innerText || match.textContent)};
+                        }""",
+                        label,
+                    )
+                except Exception as exc:
+                    return {"ok": False, "reason": repr(exc)[:180]}
+
+            if self.signup_country_label:
+                country_result = set_signup_country(self.signup_country_label)
+                if isinstance(country_result, dict) and country_result.get("via") == "opened":
+                    page.wait_for_timeout(350)
+                    option_result = click_country_option(self.signup_country_label)
+                    if isinstance(option_result, dict) and option_result.get("ok"):
+                        country_result = option_result
+                page.wait_for_timeout(500)
+                print(f"[DOB] country target={self.signup_country_label!r} result={country_result}", flush=True)
+
+            def set_birth_input(selector, value):
+                root = page.locator(selector)
+                loc = root.first() if callable(getattr(root, "first", None)) else root.first
+                try:
+                    if loc.count() <= 0:
+                        return False
+                except Exception:
+                    return False
+                loc.wait_for(state="visible", timeout=10000)
+                for _ in range(3):
+                    try:
+                        loc.click(timeout=3000)
+                        loc.fill("", timeout=2500)
+                        loc.type(value, delay=0.003 * self.wait_time, timeout=6000)
+                        page.wait_for_timeout(180)
+                    except Exception:
+                        pass
+                    try:
+                        if (loc.input_value(timeout=1000) or "").strip() == value:
+                            return True
+                    except Exception:
+                        pass
+                    try:
+                        current = page.evaluate(
+                            """({selector, value}) => {
+                                const el = document.querySelector(selector);
+                                if (!el) return null;
+                                const previous = el.value;
+                                const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+                                if (setter) setter.call(el, value);
+                                else el.value = value;
+                                try {
+                                    const tracker = el._valueTracker;
+                                    if (tracker) tracker.setValue(previous);
+                                } catch (_) {}
+                                el.dispatchEvent(new InputEvent('input', {bubbles: true, inputType: 'insertText', data: value}));
+                                el.dispatchEvent(new Event('change', {bubbles: true}));
+                                el.dispatchEvent(new Event('blur', {bubbles: true}));
+                                return el.value;
+                            }""",
+                            {"selector": selector, "value": value},
+                        )
+                        if str(current or "").strip() == value:
+                            return True
+                    except Exception:
+                        pass
+                    page.wait_for_timeout(220)
+                return False
+
+            def set_birth_select(selector, value):
+                root = page.locator(selector)
+                loc = root.first() if callable(getattr(root, "first", None)) else root.first
+                try:
+                    if loc.count() <= 0:
+                        return False
+                except Exception:
+                    return False
+                loc.wait_for(state="visible", timeout=10000)
+                try:
+                    tag_name = loc.evaluate("el => String(el.tagName || '').toUpperCase()")
+                    if tag_name != "SELECT":
+                        return False
+                except Exception:
+                    return False
+                for _ in range(3):
+                    suffix = "月" if "Month" in selector else "日"
+                    labels = [f"{int(value)}{suffix}", f"{value}{suffix}", str(value)]
+                    value_candidates = [str(value), f"{int(value):02d}"] + labels
+                    try:
+                        for candidate in value_candidates:
+                            try:
+                                loc.select_option(value=candidate, timeout=1200)
+                                page.wait_for_timeout(120)
+                                break
+                            except Exception:
+                                try:
+                                    loc.select_option(label=candidate, timeout=1200)
+                                    page.wait_for_timeout(120)
+                                    break
+                                except Exception:
+                                    continue
+                    except Exception:
+                        pass
+                    try:
+                        current = page.evaluate(
+                            """({selector, value}) => {
+                                const el = document.querySelector(selector);
+                                if (!el) return null;
+                                const suffix = /Month/i.test(selector) ? '月' : '日';
+                                const wanted = String(value);
+                                const labels = [
+                                    wanted,
+                                    wanted.padStart(2, '0'),
+                                    `${parseInt(wanted, 10)}${suffix}`,
+                                    `${wanted}${suffix}`
+                                ];
+                                const optionText = (opt) => String(opt?.textContent || '').trim();
+                                let finalValue = wanted;
+                                if (el.options) {
+                                    const match = [...el.options].find(opt => {
+                                        const ov = String(opt.value || '');
+                                        const ot = optionText(opt);
+                                        return labels.includes(ov) || labels.includes(ot) || labels.some(x => ot.includes(x));
+                                    });
+                                    if (match) finalValue = String(match.value || '');
+                                }
+                                if (String(el.value) !== finalValue) {
+                                    const previous = el.value;
+                                    const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')?.set;
+                                    if (setter) setter.call(el, finalValue);
+                                    else el.value = finalValue;
+                                    try {
+                                        const tracker = el._valueTracker;
+                                        if (tracker) tracker.setValue(previous);
+                                    } catch (_) {}
+                                    el.dispatchEvent(new Event('input', {bubbles: true}));
+                                    el.dispatchEvent(new Event('change', {bubbles: true}));
+                                }
+                                const selected = el.options ? el.options[el.selectedIndex] : null;
+                                const selectedText = optionText(selected);
+                                return {
+                                    value: el.value,
+                                    text: selectedText,
+                                    ok: labels.includes(String(el.value || '')) ||
+                                        labels.includes(selectedText) ||
+                                        labels.some(x => selectedText.includes(x))
+                                };
+                            }""",
+                            {"selector": selector, "value": value},
+                        )
+                        if isinstance(current, dict) and current.get("ok"):
+                            return True
+                    except Exception:
+                        pass
+                    try:
+                        loc.click(timeout=2500)
+                        page.wait_for_timeout(180)
+                        for label in labels:
+                            try:
+                                option = page.locator(f'[role="option"]:text-is("{label}")')
+                                if option.count() > 0:
+                                    option.click(timeout=2500)
+                                    page.wait_for_timeout(180)
+                                    break
+                            except Exception:
+                                continue
+                    except Exception:
+                        pass
+                    try:
+                        current = page.evaluate(
+                            """({selector, value}) => {
+                                const el = document.querySelector(selector);
+                                if (!el) return {value: '', text: '', ok: false};
+                                const suffix = /Month/i.test(selector) ? '月' : '日';
+                                const wanted = String(value);
+                                const labels = [wanted, wanted.padStart(2, '0'), `${parseInt(wanted, 10)}${suffix}`, `${wanted}${suffix}`];
+                                const selected = el.options ? el.options[el.selectedIndex] : null;
+                                const text = String(selected?.textContent || '').trim();
+                                return {
+                                    value: el.value || '',
+                                    text,
+                                    ok: labels.includes(String(el.value || '')) || labels.includes(text) || labels.some(x => text.includes(x))
+                                };
+                            }""",
+                            {"selector": selector, "value": value},
+                        )
+                        if isinstance(current, dict) and current.get("ok"):
+                            return True
+                    except Exception:
+                        pass
+                    page.wait_for_timeout(220)
+                return False
+
+            def set_birth_combo(label, value, suffix):
+                """
+                New Fluent signup builds sometimes render month/day as custom
+                comboboxes instead of real <select name=BirthDay>.  Keep this
+                as a narrow fallback: open the visible control and choose the
+                exact option text if it is present.
+                """
+                value = str(value)
+                try:
+                    numeric = int(value)
+                except Exception:
+                    numeric = None
+                labels = []
+                if numeric is not None:
+                    labels.extend([
+                        f"{numeric}{suffix}",
+                        f"{numeric:02d}{suffix}",
+                        str(numeric),
+                        f"{numeric:02d}",
+                    ])
+                labels.extend([value, f"{value}{suffix}"])
+                # Preserve order while de-duplicating.
+                labels = list(dict.fromkeys(labels))
+
+                def open_combo():
+                    kind = "month" if suffix == "月" else "day"
+                    try:
+                        opened = page.evaluate(
+                            """({label, kind}) => {
+                                const visible = (el) => {
+                                    if (!el) return false;
+                                    const r = el.getBoundingClientRect?.();
+                                    const s = getComputedStyle(el);
+                                    return !!r && r.width > 0 && r.height > 0 &&
+                                        s.visibility !== 'hidden' && s.display !== 'none';
+                                };
+                                const textOf = (el) => [
+                                    el.getAttribute('name'),
+                                    el.id,
+                                    el.getAttribute('aria-label'),
+                                    el.getAttribute('placeholder'),
+                                    el.getAttribute('data-testid'),
+                                    el.closest('label')?.innerText,
+                                    el.textContent
+                                ].filter(Boolean).join(' ').trim();
+                                const controls = [...document.querySelectorAll(
+                                    'select, input, [role="combobox"], button[aria-haspopup], button'
+                                )].filter(visible);
+                                const labelRe = kind === 'month'
+                                    ? /(BirthMonth|month|月份|月)/i
+                                    : /(BirthDay|day|日期|日)/i;
+                                let el =
+                                    document.querySelector(kind === 'month'
+                                        ? '[name="BirthMonth"], #BirthMonth, [aria-label="月"], [placeholder="月"]'
+                                        : '[name="BirthDay"], #BirthDay, [aria-label="日"], [placeholder="日"]');
+                                if (!visible(el)) {
+                                    el = controls.find(x => labelRe.test(textOf(x)));
+                                }
+                                if (!visible(el)) {
+                                    // Observed Fluent order: country, year,
+                                    // month, day.  This is only a fallback.
+                                    const compact = [...document.querySelectorAll('select, input, [role="combobox"]')]
+                                        .filter(visible);
+                                    el = compact[kind === 'month' ? 2 : 3] || null;
+                                }
+                                if (!visible(el)) return {ok: false, reason: 'not_found', controls: controls.map(textOf).slice(0, 12)};
+                                el.scrollIntoView({block: 'center', inline: 'center'});
+                                el.click();
+                                return {ok: true, tag: el.tagName, role: el.getAttribute('role'), text: textOf(el).slice(0, 160)};
+                            }""",
+                            {"label": label, "kind": kind},
+                        )
+                        if isinstance(opened, dict) and opened.get("ok"):
+                            return opened
+                    except Exception:
+                        pass
+
+                    # Playwright accessible-name fallback.
+                    openers = [
+                        lambda: page.get_by_label(label, exact=True),
+                        lambda: page.locator(f'[aria-label="{label}"]'),
+                        lambda: page.locator(f'[placeholder="{label}"]'),
+                        lambda: page.locator('[role="combobox"]').filter(has_text=label),
+                    ]
+                    for build in openers:
+                        try:
+                            loc = build()
+                            loc = loc.first() if callable(getattr(loc, "first", None)) else loc.first
+                            if loc.count() > 0:
+                                loc.click(timeout=2500)
+                                return {"ok": True, "via": "locator"}
+                        except Exception:
+                            continue
+                    return {"ok": False, "reason": "locator_not_found"}
+
+                for _ in range(3):
+                    opened = open_combo()
+                    page.wait_for_timeout(220)
+                    if not opened or not opened.get("ok"):
+                        page.wait_for_timeout(250)
+                        continue
+                    try:
+                        clicked = page.evaluate(
+                            """(labels) => {
+                                const visible = (el) => {
+                                    if (!el) return false;
+                                    const r = el.getBoundingClientRect?.();
+                                    const s = getComputedStyle(el);
+                                    return !!r && r.width > 0 && r.height > 0 &&
+                                        s.visibility !== 'hidden' && s.display !== 'none';
+                                };
+                                const clean = (s) => String(s || '').replace(/\\s+/g, ' ').trim();
+                                const labelSet = new Set(labels.map(clean));
+                                const optionSelectors = [
+                                    '[role="option"]',
+                                    '[role="menuitem"]',
+                                    '[aria-selected]',
+                                    '[role="listbox"] *',
+                                    '[id*="option" i]',
+                                    'div',
+                                    'span',
+                                    'button'
+                                ];
+                                const seen = new Set();
+                                const nodes = [];
+                                for (const sel of optionSelectors) {
+                                    try {
+                                        for (const el of document.querySelectorAll(sel)) {
+                                            if (seen.has(el)) continue;
+                                            seen.add(el);
+                                            if (visible(el)) nodes.push(el);
+                                        }
+                                    } catch (_) {}
+                                }
+                                const match = nodes.find(el => labelSet.has(clean(el.innerText || el.textContent)));
+                                if (!match) {
+                                    return {
+                                        ok: false,
+                                        visible: nodes.map(el => clean(el.innerText || el.textContent)).filter(Boolean).slice(0, 24)
+                                    };
+                                }
+                                match.scrollIntoView({block: 'center', inline: 'center'});
+                                match.click();
+                                return {ok: true, text: clean(match.innerText || match.textContent)};
+                            }""",
+                            labels,
+                        )
+                        if isinstance(clicked, dict) and clicked.get("ok"):
+                            page.wait_for_timeout(300)
+                            return True
+                    except Exception:
+                        pass
+                    for candidate in labels:
+                        try:
+                            opt = page.locator(f'[role="option"]:text-is("{candidate}")')
+                            if opt.count() > 0:
+                                first = opt.first() if callable(getattr(opt, "first", None)) else opt.first
+                                first.click(timeout=3500)
+                                page.wait_for_timeout(220)
+                                return True
+                        except Exception:
+                            pass
+                        try:
+                            opt = page.get_by_role("option", name=candidate, exact=True)
+                            if opt.count() > 0:
+                                first = opt.first() if callable(getattr(opt, "first", None)) else opt.first
+                                first.click(timeout=3500)
+                                page.wait_for_timeout(220)
+                                return True
+                        except Exception:
+                            pass
+                        try:
+                            opt = page.get_by_text(candidate, exact=True)
+                            if opt.count() > 0:
+                                first = opt.first() if callable(getattr(opt, "first", None)) else opt.first
+                                first.click(timeout=3500)
+                                page.wait_for_timeout(220)
+                                return True
+                        except Exception:
+                            pass
+                    try:
+                        page.keyboard.press("Escape")
+                    except Exception:
+                        pass
+                    page.wait_for_timeout(250)
+                return False
+
+            def set_birth_dom_fallback():
+                try:
+                    return page.evaluate(
+                        """({year, month, day}) => {
+                            const visible = (el) => {
+                                if (!el) return false;
+                                const r = el.getBoundingClientRect?.();
+                                const s = getComputedStyle(el);
+                                return !!r && r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none';
+                            };
+                            const textOf = (el) => [
+                                el.getAttribute('name'),
+                                el.id,
+                                el.getAttribute('aria-label'),
+                                el.getAttribute('placeholder'),
+                                el.getAttribute('data-testid'),
+                                el.closest('label')?.innerText
+                            ].filter(Boolean).join(' ').toLowerCase();
+                            const pickOptionValue = (el, value, suffix) => {
+                                if (!el || !el.options) return String(value);
+                                const labels = [`${parseInt(value, 10)}${suffix}`, `${value}${suffix}`, String(value), String(value).padStart(2, '0')];
+                                for (const opt of [...el.options]) {
+                                    const ov = String(opt.value || '');
+                                    const ot = String(opt.textContent || '').trim();
+                                    if (labels.includes(ov) || labels.includes(ot) || labels.some(x => ot.includes(x))) return ov;
+                                }
+                                return String(value);
+                            };
+                            const setValue = (el, value, proto, suffix) => {
+                                if (!el) return false;
+                                const previous = el.value;
+                                const finalValue = el.tagName === 'SELECT' ? pickOptionValue(el, value, suffix || '') : String(value);
+                                const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+                                if (setter) setter.call(el, finalValue);
+                                else el.value = finalValue;
+                                try {
+                                    const tracker = el._valueTracker;
+                                    if (tracker) tracker.setValue(previous);
+                                } catch (_) {}
+                                el.dispatchEvent(new Event('input', {bubbles: true}));
+                                el.dispatchEvent(new Event('change', {bubbles: true}));
+                                el.dispatchEvent(new Event('blur', {bubbles: true}));
+                                return true;
+                            };
+                            const inputs = [...document.querySelectorAll('input')].filter(visible);
+                            const selects = [...document.querySelectorAll('select')].filter(visible);
+                            const yearEl =
+                                document.querySelector('[name="BirthYear"], #BirthYear, input[name*="Year"], input[id*="Year"]') ||
+                                inputs.find(el => /birth.*year|year|yyyy|年份|年/.test(textOf(el))) ||
+                                inputs.find(el => ['text', 'number', 'tel'].includes((el.type || '').toLowerCase()));
+                            const monthEl =
+                                document.querySelector('[name="BirthMonth"], #BirthMonth, select[name*="Month"], select[id*="Month"]') ||
+                                selects.find(el => /birth.*month|month|月份|月/.test(textOf(el))) ||
+                                selects[1] || selects[0];
+                            const dayEl =
+                                document.querySelector('[name="BirthDay"], #BirthDay, select[name*="Day"], select[id*="Day"]') ||
+                                selects.find(el => /birth.*day|day|日期|日/.test(textOf(el))) ||
+                                selects[2] || selects[1];
+                            setValue(monthEl, month, HTMLSelectElement.prototype, '月');
+                            setValue(dayEl, day, HTMLSelectElement.prototype, '日');
+                            setValue(yearEl, year, HTMLInputElement.prototype, '');
+                            return {
+                                inputCount: inputs.length,
+                                selectCount: selects.length,
+                                year: yearEl ? yearEl.value : '',
+                                month: monthEl ? monthEl.value : '',
+                                day: dayEl ? dayEl.value : '',
+                                yearMeta: yearEl ? textOf(yearEl).slice(0, 160) : '',
+                                monthMeta: monthEl ? textOf(monthEl).slice(0, 160) : '',
+                                dayMeta: dayEl ? textOf(dayEl).slice(0, 160) : ''
+                            };
+                        }""",
+                        {"year": year, "month": month, "day": day},
+                    )
+                except Exception:
+                    return {}
+
+            def get_birth_values():
+                try:
+                    return page.evaluate(
+                        """() => {
+                            const visible = (el) => {
+                                if (!el) return false;
+                                const r = el.getBoundingClientRect?.();
+                                const s = getComputedStyle(el);
+                                return !!r && r.width > 0 && r.height > 0 &&
+                                    s.visibility !== 'hidden' && s.display !== 'none';
+                            };
+                            const textOf = (el) => [
+                                el.getAttribute('name'),
+                                el.id,
+                                el.getAttribute('aria-label'),
+                                el.getAttribute('placeholder'),
+                                el.getAttribute('data-testid'),
+                                el.closest('label')?.innerText,
+                                el.textContent
+                            ].filter(Boolean).join(' ').trim();
+                            const valueOf = (el, placeholder) => {
+                                if (!el) return '';
+                                let raw = '';
+                                if ('value' in el && el.value) raw = String(el.value);
+                                if (!raw) raw = String(el.innerText || el.textContent || '');
+                                raw = raw.replace(/\\s+/g, ' ').trim();
+                                if (!raw || raw === placeholder) return '';
+                                const m = raw.match(/\\d{1,4}/);
+                                return m ? m[0].replace(/^0+(?=\\d)/, '') : raw;
+                            };
+                            const controls = [...document.querySelectorAll('select, input, [role="combobox"]')]
+                                .filter(visible);
+                            const pick = (re, fallbackIndex) => (
+                                controls.find(el => re.test(textOf(el))) ||
+                                controls[fallbackIndex] ||
+                                null
+                            );
+                            const yearEl =
+                                document.querySelector('[name="BirthYear"], #BirthYear, input[name*="Year"], input[id*="Year"]') ||
+                                pick(/birth.*year|year|yyyy|年份|年/i, 1);
+                            const monthEl =
+                                document.querySelector('[name="BirthMonth"], #BirthMonth, select[name*="Month"], select[id*="Month"]') ||
+                                pick(/birth.*month|month|月份|月/i, 2);
+                            const dayEl =
+                                document.querySelector('[name="BirthDay"], #BirthDay, select[name*="Day"], select[id*="Day"]') ||
+                                pick(/birth.*day|day|日期|日/i, 3);
+                            return {
+                                year: valueOf(yearEl, '年份'),
+                                month: valueOf(monthEl, '月'),
+                                day: valueOf(dayEl, '日'),
+                                controls: controls.map(el => textOf(el).slice(0, 120)).slice(0, 8)
+                            };
+                        }"""
+                    )
+                except Exception:
+                    return {}
+
+            for dob_attempt in range(4):
+                fallback_values = set_birth_dom_fallback()
+                if not set_birth_select('[name="BirthMonth"]', month):
+                    set_birth_combo("月", month, "月")
+                set_birth_input('[name="BirthYear"]', year)
+                # Month/year changes can re-render the day drop-down and reset
+                # it to the placeholder.  Always set day last, then verify.
+                if not set_birth_select('[name="BirthDay"]', day):
+                    set_birth_combo("日", day, "日")
+                values = get_birth_values()
+                if not values.get("day"):
+                    page.wait_for_timeout(250)
+                    set_birth_dom_fallback()
+                    if not set_birth_select('[name="BirthDay"]', day):
+                        set_birth_combo("日", day, "日")
+                    values = get_birth_values()
+                print(
+                    f"[DOB] attempt {dob_attempt + 1}: "
+                    f"target={{'year': {year!r}, 'month': {month!r}, 'day': {day!r}}} "
+                    f"fallback={fallback_values} "
+                    f"named={{'year': {values.get('year')!r}, 'month': {values.get('month')!r}, 'day': {values.get('day')!r}}} "
+                    f"controls={values.get('controls')!r}",
+                    flush=True,
+                )
+                if not values.get("year") or not values.get("month") or not values.get("day"):
+                    if dob_attempt == 3:
+                        raise TimeoutError(f"DOB fields not stable: {values!r}")
+                    page.wait_for_timeout(650)
+                    continue
+                click_primary_button(timeout=10000)
+                try:
+                    page.wait_for_function(
+                        """() => {
+                            const el = document.querySelector('#lastNameInput');
+                            if (!el) return false;
+                            const r = el.getBoundingClientRect?.();
+                            const s = getComputedStyle(el);
+                            return !!r && r.width > 0 && r.height > 0 &&
+                                s.visibility !== 'hidden' && s.display !== 'none';
+                        }""",
+                        timeout=7000,
+                    )
+                    break
+                except Exception:
+                    if dob_attempt == 3:
+                        raise
+                    page.wait_for_timeout(650)
+
+            try:
+                page.locator('#lastNameInput').type(lastname, delay=0.002 * self.wait_time, timeout=10000)
+            except Exception as exc:
+                if "Viewport size not available" not in repr(exc):
+                    raise
+                page.evaluate(
+                    """(value) => {
+                        const el = document.querySelector('#lastNameInput');
+                        if (!el) throw new Error('lastNameInput not found');
+                        el.scrollIntoView({block:'center', inline:'center'});
+                        el.focus();
+                        const previous = el.value;
+                        const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+                        if (setter) setter.call(el, value); else el.value = value;
+                        try { el._valueTracker && el._valueTracker.setValue(previous); } catch (_) {}
+                        el.dispatchEvent(new InputEvent('input', {bubbles:true, inputType:'insertText', data:value}));
+                        el.dispatchEvent(new Event('change', {bubbles:true}));
+                    }""",
+                    lastname,
+                )
+            page.wait_for_timeout(0.02 * self.wait_time)
+            try:
+                page.locator('#firstNameInput').fill(firstname, timeout=10000)
+            except Exception as exc:
+                if "Viewport size not available" not in repr(exc):
+                    raise
+                page.evaluate(
+                    """(value) => {
+                        const el = document.querySelector('#firstNameInput');
+                        if (!el) throw new Error('firstNameInput not found');
+                        el.scrollIntoView({block:'center', inline:'center'});
+                        el.focus();
+                        const previous = el.value;
+                        const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+                        if (setter) setter.call(el, value); else el.value = value;
+                        try { el._valueTracker && el._valueTracker.setValue(previous); } catch (_) {}
+                        el.dispatchEvent(new InputEvent('input', {bubbles:true, inputType:'insertText', data:value}));
+                        el.dispatchEvent(new Event('change', {bubbles:true}));
+                    }""",
+                    firstname,
+                )
+
+            if time.time() - start_time < self.wait_time / 1000:
+                page.wait_for_timeout(self.wait_time - (time.time() - start_time) * 1000)
+
+            submit_state = "timeout"
+            for name_submit_attempt in range(3):
+                click_primary_button(timeout=10000)
+                submit_state = wait_after_name_submit(timeout_ms=12000)
+                print(f"[Name] submit attempt {name_submit_attempt + 1}: state={submit_state}")
+                if submit_state in ("create_account", "challenge", "left_name_page", "blocked"):
+                    break
+                page.wait_for_timeout(700)
+            if submit_state == "timeout":
+                print("[Error: Submit] - 姓名页提交后未观察到验证码、CreateAccount 或页面切换。")
+                self.save_diagnostic(page, "name_submit_stuck", email)
+                return False
+            # Older code waited for the footer terms link to detach here.
+            # Recent Fluent signup builds keep that footer across multiple
+            # views, so this wait can stall the whole run after a successful
+            # name submit.  The explicit wait_after_name_submit() state check
+            # above is the authoritative transition signal now.
+            page.wait_for_timeout(400)
+
+            if submit_state == "left_name_page":
+                transition_deadline = time.time() + 15
+                while time.time() < transition_deadline:
+                    if create_account_requested_or_done():
+                        submit_state = "create_account"
+                        break
+                    if hs_challenge_visible():
+                        submit_state = "challenge"
+                        break
+                    if page.get_by_text('账户创建已被阻止').count() or page.get_by_text('一些异常活动').count():
+                        submit_state = "blocked"
+                        break
+                    page.wait_for_timeout(500)
+                print(f"[Name] post-left transition state={submit_state}")
+
+            if page.get_by_text('一些异常活动').count() or page.get_by_text('此站点正在维护，暂时无法使用，请稍后重试。').count() > 0:
+                print("[Error: IP or browser] - 当前IP注册频率过快。检查IP与是否为指纹浏览器并关闭了无头模式。")
+                self.save_diagnostic(page, "abnormal_activity", email)
+                return False
+
+            if page.locator('iframe#enforcementFrame').count() > 0:
+                print("[Error: FunCaptcha] - 验证码类型错误，非按压验证码。")
+                self.save_diagnostic(page, "funcaptcha", email)
+                return False
+
+            if self.capture_challenge:
+                self.save_challenge_snapshot(page, email)
+
+            if self.manual_captcha:
+                finalize_captcha_events = self.attach_captcha_event_logger(page, email)
+                print(f"[Manual] - 已进入人机验证阶段，请在浏览器里手动完成验证；最多等待 {self.manual_captcha_wait_seconds} 秒。")
+                deadline = time.time() + self.manual_captcha_wait_seconds
+                manual_challenge_cleared = False
+                while time.time() < deadline:
+                    if page.get_by_text('账户创建已被阻止').count() or page.get_by_text('一些异常活动').count():
+                        self.save_diagnostic(page, "manual_blocked", email)
+                        if finalize_captcha_events:
+                            finalize_captcha_events()
+                        return False
+
+                    challenge_visible = hs_challenge_visible()
+                    if not challenge_visible:
+                        manual_challenge_cleared = True
+                        break
+                    page.wait_for_timeout(1000)
+                else:
+                    self.save_diagnostic(page, "manual_timeout", email)
+                    if finalize_captcha_events:
+                        finalize_captcha_events()
+                    return False
+
+                if manual_challenge_cleared and self.manual_post_verify_wait_seconds > 0:
+                    page.wait_for_timeout(self.manual_post_verify_wait_seconds * 1000)
+                    if page.get_by_text('账户创建已被阻止').count() or page.get_by_text('一些异常活动').count():
+                        self.save_diagnostic(page, "manual_post_blocked", email)
+                        if finalize_captcha_events:
+                            finalize_captcha_events()
+                        return False
+                if finalize_captcha_events:
+                    finalize_captcha_events()
+            else:
+                if hs_challenge_visible():
+                    captcha_result = self.handle_captcha(page)
+                    if not captcha_result:
+                        self.save_diagnostic(page, "captcha_failed", email)
+                        raise TimeoutError
+                    if self.post_captcha_account_wait_seconds > 0:
+                        page.wait_for_timeout(self.post_captcha_account_wait_seconds * 1000)
+                        if page.get_by_text('账户创建已被阻止').count() or page.get_by_text('一些异常活动').count():
+                            self.save_diagnostic(page, "post_captcha_blocked", email)
+                            return False
+                else:
+                    print("[Captcha] - 未观察到可见长按验证，转为等待 CreateAccount。")
+
+            account_ok, account_state = self.wait_for_create_account_success(page, timeout_ms=28000)
+            if not account_ok:
+                print(f"[Error: CreateAccount] - 未观察到 CreateAccount 200，避免误判成功。 state={account_state}")
+                self.save_diagnostic(page, "registration_not_completed", email)
+                return False
+
+        except Exception as exc:
+            print(f"[Error: IP] - 加载超时或因触发机器人检测导致按压次数达到最大仍未通过。 detail={exc!r}")
+            self.save_diagnostic(page, "register_exception", email)
+            return False
+
+        filename = os.path.join(self.results_dir, 'logged_email.txt' if self.enable_oauth2 else 'unlogged_email.txt')
+        with open(filename, 'a', encoding='utf-8') as f:
+            f.write(f"{email}{self.email_suffix}: {password}\n")
+        print(f'[Success: Email Registration] - {email}{self.email_suffix}: {password}')
+
+        if not self.enable_oauth2:
+            return True
+
+        try:
+            page.locator('[aria-label="新邮件"]').wait_for(timeout=32000)
+            return True
+        except:
+            print('[Error: Timeout] - 邮箱未初始化，无法正常收件。')
+            return False
