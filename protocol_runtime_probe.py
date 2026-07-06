@@ -8909,6 +8909,129 @@ def protocol_time_warp_hold(
 
     runtime_active_qi_hint = ""
 
+    def collector_qi_entries():
+        try:
+            capture_state = getattr(page, "_pxprobe_collector_capture", None) or {}
+        except Exception:
+            capture_state = {}
+        if not isinstance(capture_state, dict):
+            return {}
+
+        entries = {}
+
+        def entry_for(qi):
+            item = entries.get(qi)
+            if item is None:
+                item = {
+                    "qi": qi,
+                    "latest_seen": 0.0,
+                    "latest_order": 0,
+                    "has_body": False,
+                    "has_y1nz": False,
+                    "has_knp": False,
+                    "has_arv": False,
+                    "has_px561": False,
+                    "score0": False,
+                    "score1": False,
+                    "result0": False,
+                    "result_minus1": False,
+                    "last_item": None,
+                    "last_response": None,
+                }
+                entries[qi] = item
+            return item
+
+        def ingest(item, order, is_response=False):
+            if not isinstance(item, dict):
+                return
+            qi = str(item.get("qi") or "")
+            if not qi or qi == "1604064986000":
+                return
+            current = entry_for(qi)
+            try:
+                seen = float(item.get("seen_at") or 0.0)
+            except Exception:
+                seen = 0.0
+            if seen >= float(current.get("latest_seen") or 0.0):
+                current["latest_seen"] = seen
+                current["latest_order"] = int(order)
+            tags = [str(x) for x in (item.get("tags") or [])]
+            current["has_y1nz"] = bool(current.get("has_y1nz") or "Y1NZWSUzXWs=" in tags)
+            current["has_knp"] = bool(current.get("has_knp") or "KnpQcG8ZVUI=" in tags)
+            current["has_arv"] = bool(current.get("has_arv") or "aRVTHy91Wio=" in tags)
+            current["has_px561"] = bool(current.get("has_px561") or "PX561" in tags or "PX1200" in tags)
+            if item.get("body"):
+                current["has_body"] = True
+                current["last_item"] = item
+            elif not is_response and current.get("last_item") is None:
+                current["last_item"] = item
+            if is_response:
+                current["last_response"] = item
+                scores = [str(x) for x in (item.get("scores") or [])]
+                results = [str(x) for x in (item.get("results") or [])]
+                current["score0"] = bool(
+                    current.get("score0") or any(x.startswith("IoIoIo|score|0|") for x in scores)
+                )
+                current["score1"] = bool(
+                    current.get("score1") or any(x.startswith("IoIoIo|score|1|") for x in scores)
+                )
+                current["result0"] = bool(
+                    current.get("result0") or any("|result|0|" in x or x.endswith("|result|0") for x in results)
+                )
+                current["result_minus1"] = bool(
+                    current.get("result_minus1") or any("|result|-1|" in x or x.endswith("|result|-1") for x in results)
+                )
+
+        for order, item in enumerate(list(capture_state.get("items") or [])[-24:], 1):
+            ingest(item, order, is_response=False)
+        base = 1000
+        for order, item in enumerate(list(capture_state.get("responses") or [])[-32:], base):
+            ingest(item, order, is_response=True)
+        ingest(capture_state.get("last"), 2000, is_response=False)
+        return entries
+
+    def select_active_collector_qi(preferred_qi: str = "", allow_failed: bool = False):
+        entries = collector_qi_entries()
+        preferred_qi = str(preferred_qi or "")
+        if preferred_qi and preferred_qi in entries:
+            preferred = entries.get(preferred_qi) or {}
+            if allow_failed or not preferred.get("score1"):
+                return preferred_qi, "runtime_hint"
+
+        candidates = []
+        for qi, item in entries.items():
+            if not qi:
+                continue
+            if item.get("score1") and not allow_failed:
+                continue
+            score = int(item.get("latest_order") or 0)
+            if item.get("result0"):
+                score += 12000
+            if item.get("score0"):
+                score += 5000
+            if item.get("has_knp"):
+                score += 2400
+            if item.get("has_arv"):
+                score += 1800
+            if item.get("has_px561"):
+                score += 1600
+            if item.get("has_y1nz"):
+                score += 800
+            if item.get("has_body"):
+                score += 250
+            if item.get("result_minus1"):
+                score -= 4000
+            if item.get("score1"):
+                score -= 8000
+            candidates.append((score, qi))
+        if candidates:
+            candidates.sort(key=lambda pair: (-pair[0], pair[1]))
+            return candidates[0][1], "collector_best"
+
+        if not allow_failed and entries:
+            return select_active_collector_qi(preferred_qi, allow_failed=True)
+        return "", ""
+
     def choose_runtime_active_qi(results):
         counts = {}
         for item in results or []:
@@ -8923,9 +9046,12 @@ def protocol_time_warp_hold(
                 counts[qi] = counts.get(qi, 0) + 1
             except Exception:
                 continue
-        if not counts:
-            return ""
-        return sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))[0][0]
+        for qi, _count in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0])):
+            selected_qi, _source = select_active_collector_qi(qi)
+            if selected_qi == qi:
+                return qi
+        selected_qi, _source = select_active_collector_qi()
+        return selected_qi
 
     def install_late_time_warp():
         results = []
@@ -8952,10 +9078,12 @@ def protocol_time_warp_hold(
         try:
             capture_state = getattr(page, "_pxprobe_collector_capture", None) or {}
             if not active_qi and isinstance(capture_state, dict):
-                try:
-                    active_qi = str(((capture_state.get("last") or {}).get("qi")) or "")
-                except Exception:
-                    active_qi = ""
+                active_qi, _source = select_active_collector_qi()
+                if not active_qi:
+                    try:
+                        active_qi = str(((capture_state.get("last") or {}).get("qi")) or "")
+                    except Exception:
+                        active_qi = ""
             responses = list((capture_state.get("responses") if isinstance(capture_state, dict) else []) or [])
             for resp in reversed(responses[-12:]):
                 try:
@@ -9179,6 +9307,8 @@ def protocol_time_warp_hold(
             return None
 
         preferred_qi = str(preferred_qi or "")
+        if not preferred_qi:
+            preferred_qi, _source = select_active_collector_qi()
 
         def usable(item, want_body: bool = False):
             if not isinstance(item, dict):
@@ -9353,8 +9483,14 @@ def protocol_time_warp_hold(
         last = capture_state.get("last") if isinstance(capture_state, dict) else None
         last_qi = str((last or {}).get("qi") or "")
         preferred_qi = str(runtime_active_qi_hint or "")
-        current_qi = preferred_qi or last_qi
-        current_qi_source = "runtime_hint" if preferred_qi else "collector_last"
+        selected_qi, selected_source = select_active_collector_qi(preferred_qi)
+        current_qi = selected_qi or preferred_qi or last_qi
+        if selected_qi and preferred_qi and selected_qi == preferred_qi:
+            current_qi_source = "runtime_hint"
+        elif selected_qi:
+            current_qi_source = selected_source or "collector_best"
+        else:
+            current_qi_source = "collector_last"
         current_resp = last if last_qi == current_qi else None
         if not current_resp and current_qi:
             for resp in reversed(responses[-16:]):
@@ -9440,7 +9576,9 @@ def protocol_time_warp_hold(
             try:
                 capture_state = getattr(page, "_pxprobe_collector_capture", None) or {}
                 last = capture_state.get("last") if isinstance(capture_state, dict) else None
-                qi_now = str(runtime_active_qi_hint or ((last or {}).get("qi") or ""))
+                qi_now, _source = select_active_collector_qi(runtime_active_qi_hint)
+                if not qi_now:
+                    qi_now = str(runtime_active_qi_hint or ((last or {}).get("qi") or ""))
                 if qi_now and qi_now != stable_qi:
                     stable_qi = qi_now
                     stable_since = time.time()
