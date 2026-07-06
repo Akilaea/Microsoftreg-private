@@ -9474,7 +9474,13 @@ def protocol_time_warp_hold(
     if install_mode == "late":
         install_late_time_warp()
 
-    wait_prehold_readiness()
+    prehold_ready = wait_prehold_readiness()
+    if int(prehold_readiness_gate_ms or 0) > 0 and prehold_ready and not prehold_ready.get("ready"):
+        print(
+            "[Probe] prehold readiness gate: aborting before mouse input "
+            + json.dumps(prehold_ready, ensure_ascii=False)[:1400]
+        )
+        return False
 
     if not skip_mid_snapshots:
         try:
@@ -11689,5 +11695,4 @@ def main():
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
 

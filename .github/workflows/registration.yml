@@ -232,7 +232,8 @@ jobs:
             -MinRuntimeHookReadyFrames 6 `
             -MinKnpPrestartOk 5 `
             -PreholdHookGuardRetries 2 `
-            -PreholdReadinessGateMs 1800 `
+            -PreholdReadinessGateMs 3200 `
+            -PreholdLoadedMinAgeMs 250 `
             -RealTargetWaitMs 20000 `
             -RetryAfterMs 7000 `
             -SignupEntryMode msal_authorize `
@@ -261,7 +262,7 @@ jobs:
             Select-Object -First 1
           if ($latestProbe) {
             Write-Host "LATEST_PROBE_LOG=$($latestProbe.FullName)"
-            Select-String -LiteralPath $latestProbe.FullName -Pattern "riskblock|risk/verify|CreateAccount|outlook_register result|Success: Email Registration" |
+            Select-String -LiteralPath $latestProbe.FullName -Pattern "riskblock|risk/verify|CreateAccount|outlook_register result|Success: Email Registration|prehold readiness|captcha protocol success|collector response|result\\|0|timed out" |
               Select-Object -Last 40 |
               ForEach-Object { Write-Host "LIVE_SIGNAL $($_.Line)" }
           }
