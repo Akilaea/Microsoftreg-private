@@ -78,7 +78,10 @@ jobs:
           $secretProxy = $env:LIVE_PROXY_URL
           if ([string]::IsNullOrWhiteSpace($proxyInput)) { $proxyInput = "secret_or_direct" }
           if ($proxyInput -in @("secret", "secret_or_direct")) {
-            $proxy = if ([string]::IsNullOrWhiteSpace($secretProxy)) { "direct" } else { $secretProxy }
+            if ([string]::IsNullOrWhiteSpace($secretProxy)) {
+              throw "LIVE_PROXY_URL secret is empty while proxy_url=$proxyInput. Configure the repository secret or explicitly dispatch with proxy_url=direct/off/none for a deliberate direct test."
+            }
+            $proxy = $secretProxy
           } else {
             $proxy = $proxyInput
           }
@@ -153,7 +156,10 @@ jobs:
           $secretProxy = $env:LIVE_PROXY_URL
           if ([string]::IsNullOrWhiteSpace($proxyInput)) { $proxyInput = "secret_or_direct" }
           if ($proxyInput -in @("secret", "secret_or_direct")) {
-            $proxy = if ([string]::IsNullOrWhiteSpace($secretProxy)) { "direct" } else { $secretProxy }
+            if ([string]::IsNullOrWhiteSpace($secretProxy)) {
+              throw "LIVE_PROXY_URL secret is empty while proxy_url=$proxyInput. Configure the repository secret or explicitly dispatch with proxy_url=direct/off/none for a deliberate direct test."
+            }
+            $proxy = $secretProxy
           } else {
             $proxy = $proxyInput
           }
@@ -245,6 +251,26 @@ jobs:
         if: always()
         shell: powershell
         run: |
+          if (Test-Path .\config.ctf.runtime.github-actions-live.json) {
+            $cfg = Get-Content -LiteralPath .\config.ctf.runtime.github-actions-live.json -Raw | ConvertFrom-Json
+            $proxyMode = if ([string]::IsNullOrWhiteSpace($cfg.proxy)) { "direct" } else { "configured" }
+            Write-Host "LIVE_CONFIG_PROXY_MODE=$proxyMode"
+          }
+          $latestProbe = Get-ChildItem .\Results\protocol_runtime\*live_probe.log -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTime -Descending |
+            Select-Object -First 1
+          if ($latestProbe) {
+            Write-Host "LATEST_PROBE_LOG=$($latestProbe.FullName)"
+            Select-String -LiteralPath $latestProbe.FullName -Pattern "riskblock|risk/verify|CreateAccount|outlook_register result|Success: Email Registration" |
+              Select-Object -Last 40 |
+              ForEach-Object { Write-Host "LIVE_SIGNAL $($_.Line)" }
+          }
+          $latestScreenshot = Get-ChildItem .\Results -Recurse -File -Include *.png -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTime -Descending |
+            Select-Object -First 1
+          if ($latestScreenshot) {
+            Write-Host "LATEST_SCREENSHOT=$($latestScreenshot.FullName)"
+          }
           if (Test-Path .\Results) {
             Get-ChildItem .\Results -Recurse -File |
               Sort-Object LastWriteTime -Descending |
