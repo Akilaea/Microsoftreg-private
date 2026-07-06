@@ -1,0 +1,71 @@
+name: Offline CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  offline-checks:
+    name: Offline package checks
+    runs-on: windows-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Show environment
+        shell: powershell
+        run: |
+          python --version
+          powershell -NoProfile -Command '$PSVersionTable.PSVersion'
+
+      - name: Scan for GitHub token patterns
+        shell: python
+        run: |
+          from pathlib import Path
+          patterns = tuple(prefix + "_" for prefix in ("ghp", "gho", "ghu", "ghs", "ghr"))
+          patterns += ("github" + "_pat_",)
+          skip = {".git", "Results", "profiles", ".mihomo-isolated", ".release", "__pycache__"}
+          hits = []
+          for path in Path(".").rglob("*"):
+              if not path.is_file() or any(part in skip for part in path.parts):
+                  continue
+              text = path.read_text(encoding="utf-8-sig", errors="ignore")
+              for pat in patterns:
+                  if pat in text:
+                      hits.append(f"{path}: {pat}")
+          if hits:
+              print("\n".join(hits))
+              raise SystemExit(1)
+          print("TOKEN_PATTERN_SCAN_OK")
+
+      - name: Compile Python sources
+        shell: powershell
+        run: |
+          $files = Get-ChildItem -Recurse -File -Include *.py |
+            Where-Object { $_.FullName -notmatch '\\__pycache__\\' } |
+            ForEach-Object { $_.FullName }
+          python -m py_compile @files
+
+      - name: Check package manifest and checksums
+        shell: powershell
+        run: python .\tools\check_package.py --compile
+
+      - name: Check text encoding
+        shell: powershell
+        run: python .\tools\check_encoding.py
+
+      - name: Run offline selftest
+        shell: powershell
+        run: python .\selftest_1s_offline.py

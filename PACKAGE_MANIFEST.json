@@ -2,7 +2,7 @@
   "package": "outlook-register-current-20260706_185526",
   "created_at": "20260706_185526",
   "source": "C:\\Users\\wdnmd\\Documents\\outlook\\OutlookRegister-main\\OutlookRegister-repo",
-  "included_count": 131,
+  "included_count": 132,
   "excluded_state_dirs": [
     ".git",
     "Results",
@@ -15,6 +15,7 @@
   "current_config": "config.ctf.runtime.protocol1s-adssafe-stab-5-20260705_033428.manual.20260705_033428.json",
   "notes": "Clean source package; local runtime traces, browser profiles, node pools and ledgers are intentionally excluded. Maintenance docs/tools are included and do not alter runtime behavior.",
   "files": [
+    ".github/workflows/ci.yml",
     ".gitignore",
     "ads_like_cloak_profile_generator.py",
     "adspower_auto_profile.py",
