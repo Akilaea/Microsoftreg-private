@@ -361,6 +361,36 @@ RUNTIME_HOOK_JS = r"""
       } catch (e) {
         push("time_warp_event_ts_patch_error", { error: String(e && e.message || e) });
       }
+      function inputEventSummary(ev) {
+        let target = null;
+        try {
+          const t = ev && ev.target;
+          const r = t && t.getBoundingClientRect ? t.getBoundingClientRect() : null;
+          target = t ? {
+            tag: t.tagName || "",
+            id: t.id || "",
+            role: t.getAttribute ? t.getAttribute("role") || "" : "",
+            aria: t.getAttribute ? t.getAttribute("aria-label") || "" : "",
+            text: String(t.innerText || t.textContent || "").slice(0, 120),
+            rect: r ? { x: r.x, y: r.y, width: r.width, height: r.height } : null
+          } : null;
+        } catch (_) {}
+        return {
+          type: ev && ev.type,
+          isTrusted: !!(ev && ev.isTrusted),
+          clientX: ev && typeof ev.clientX === "number" ? ev.clientX : null,
+          clientY: ev && typeof ev.clientY === "number" ? ev.clientY : null,
+          button: ev && typeof ev.button === "number" ? ev.button : null,
+          buttons: ev && typeof ev.buttons === "number" ? ev.buttons : null,
+          pointerType: ev && ev.pointerType || "",
+          target,
+          activeElement: document.activeElement ? {
+            tag: document.activeElement.tagName || "",
+            id: document.activeElement.id || "",
+            role: document.activeElement.getAttribute ? document.activeElement.getAttribute("role") || "" : ""
+          } : null
+        };
+      }
       function patchIncomingEventTimeStamp(ev) {
         try {
           if (!warp || !ev) return;
@@ -375,12 +405,17 @@ RUNTIME_HOOK_JS = r"""
             try { ev.__defineGetter__("timeStamp", () => ts); } catch (_) {}
           }
           state.eventTsPatched = (state.eventTsPatched || 0) + 1;
-          if (state.eventTsPatched <= 24) {
+          state.eventTsPatchedByType = state.eventTsPatchedByType || {};
+          const eventType = String(ev.type || "");
+          state.eventTsPatchedByType[eventType] = (state.eventTsPatchedByType[eventType] || 0) + 1;
+          const important = /(?:down|up|cancel|touchstart|touchend|touchcancel)$/i.test(eventType);
+          if (important || state.eventTsPatched <= 24 || state.eventTsPatchedByType[eventType] <= 4) {
             push("time_warp_event_ts_forced", {
-              type: ev.type,
+              type: eventType,
               ts,
               reason: warp.reason,
-              fakeElapsed: fakeDelta()
+              fakeElapsed: fakeDelta(),
+              event: inputEventSummary(ev)
             });
           }
         } catch (e) {

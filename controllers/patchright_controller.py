@@ -530,6 +530,14 @@ class PatchrightController(BaseBrowserController):
                                     or frame.url == "about:blank"
                                     or "iframe.hsprotect.net" in (frame.url or "")
                                 ):
+                                    box = dict(box)
+                                    box.update({
+                                        "_px_source": "frame_scan",
+                                        "_px_frame_index": frame_index,
+                                        "_px_frame_url": frame.url,
+                                        "_px_selector": button_selector,
+                                        "_px_text": text[:120],
+                                    })
                                     print(
                                         f"[Captcha] - located hold button via frame[{frame_index}] "
                                         f"selector={button_selector!r} url={frame.url} text={text!r} box={box}"
@@ -579,6 +587,23 @@ class PatchrightController(BaseBrowserController):
                                 target.wait_for(state="visible", timeout=400)
                                 box = target.bounding_box(timeout=250)
                                 if box and box.get("width", 0) > 20 and box.get("height", 0) > 10:
+                                    try:
+                                        text = target.inner_text(timeout=120)
+                                    except Exception:
+                                        text = ""
+                                    box = dict(box)
+                                    box.update({
+                                        "_px_source": "frame_locator_inner",
+                                        "_px_outer_selector": outer_selector,
+                                        "_px_inner_selector": inner_selector,
+                                        "_px_selector": button_selector,
+                                        "_px_text": text[:120],
+                                    })
+                                    print(
+                                        f"[Captcha] - located hold button via frame_locator inner "
+                                        f"outer={outer_selector!r} inner={inner_selector!r} "
+                                        f"selector={button_selector!r} text={text!r} box={box}"
+                                    )
                                     return target, box
                     except Exception:
                         continue
@@ -595,6 +620,22 @@ class PatchrightController(BaseBrowserController):
                             target.wait_for(state="visible", timeout=400)
                             box = target.bounding_box(timeout=250)
                             if box and box.get("width", 0) > 20 and box.get("height", 0) > 10:
+                                try:
+                                    text = target.inner_text(timeout=120)
+                                except Exception:
+                                    text = ""
+                                box = dict(box)
+                                box.update({
+                                    "_px_source": "frame_locator_outer",
+                                    "_px_outer_selector": outer_selector,
+                                    "_px_selector": button_selector,
+                                    "_px_text": text[:120],
+                                })
+                                print(
+                                    f"[Captcha] - located hold button via frame_locator outer "
+                                    f"outer={outer_selector!r} selector={button_selector!r} "
+                                    f"text={text!r} box={box}"
+                                )
                                 return target, box
                     except Exception:
                         continue

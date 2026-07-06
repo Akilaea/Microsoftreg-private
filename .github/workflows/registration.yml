@@ -265,7 +265,7 @@ jobs:
               -WallMs ${{ inputs.wall_ms }} `
               -HoldMs 13000 `
               -StopDelayMs 900 `
-              -PreDownDwellMs 900 `
+              -PreDownDwellMs 0 `
               -FinalProofNormalizer ads_safe `
               -W0Policy after160 `
               -NoSyntheticU0 `
