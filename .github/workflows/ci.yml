@@ -19,6 +19,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Preserve repository line endings
+        shell: powershell
+        run: |
+          git config core.autocrlf false
+          git reset --hard HEAD
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
