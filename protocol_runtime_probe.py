@@ -10482,10 +10482,17 @@ def protocol_time_warp_hold(
                     result0_at = 0.0
                     result0_qi = ""
                     result0_seq = ""
-                    if last_result == "0" and last_result_at >= wait_started:
+                    ignored_result0 = None
+                    if (
+                        last_result == "0"
+                        and last_result_at >= wait_started
+                        and (not active_score_qi or str(last_qi or "") == active_score_qi)
+                    ):
                         result0_at = last_result_at
                         result0_qi = last_qi
                         result0_seq = last_seq
+                    elif last_result == "0" and last_result_at >= wait_started:
+                        ignored_result0 = {"qi": last_qi, "seq": last_seq, "source": "final_guard"}
                     else:
                         try:
                             capture_state = getattr(page, "_pxprobe_collector_capture", None) or {}
@@ -10502,8 +10509,16 @@ def protocol_time_warp_hold(
                                 # enough to hand control back to V1, which then
                                 # posts risk/verify immediately.
                                 if any(x.startswith("oIIoIooo|0") for x in results):
+                                    qi = str(resp.get("qi") or "")
+                                    if active_score_qi and qi != active_score_qi:
+                                        ignored_result0 = {
+                                            "qi": qi,
+                                            "seq": str(resp.get("seq") or ""),
+                                            "source": "collector_capture",
+                                        }
+                                        continue
                                     result0_at = seen_at
-                                    result0_qi = str(resp.get("qi") or "")
+                                    result0_qi = qi
                                     result0_seq = str(resp.get("seq") or "")
                                     break
                         except Exception:
@@ -10514,6 +10529,12 @@ def protocol_time_warp_hold(
                             f"returning early for protocol_takeover qi={result0_qi} seq={result0_seq}"
                         )
                         return True
+                    if ignored_result0:
+                        print(
+                            "[Probe] time_warp_hold: ignoring collector result|0 for non-active qi "
+                            f"qi={ignored_result0.get('qi')} seq={ignored_result0.get('seq')} "
+                            f"active_qi={active_score_qi} source={ignored_result0.get('source')}"
+                        )
                 if last_result == "-1" and last_result_at >= wait_started:
                     if int(attempts or 1) > 1 and not result_retry_fired:
                         result_retry_fired = True
