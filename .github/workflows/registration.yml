@@ -233,7 +233,7 @@ jobs:
             -MinKnpPrestartOk 5 `
             -PreholdHookGuardRetries 2 `
             -PreholdReadinessGateMs 3200 `
-            -PreholdLoadedMinAgeMs 250 `
+            -PreholdLoadedMinAgeMs 0 `
             -RealTargetWaitMs 20000 `
             -RetryAfterMs 7000 `
             -SignupEntryMode msal_authorize `
