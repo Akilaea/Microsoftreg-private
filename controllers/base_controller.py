@@ -217,6 +217,8 @@ class BaseBrowserController(ABC):
         self.active_resources = []  # 记录资源以便关闭
         self.signup_network_lock = threading.Lock()
         self.signup_network_state = {}
+        self.page_diagnostics_lock = threading.Lock()
+        self.page_diagnostics_state = {}
 
         self.results_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'Results')
         os.makedirs(self.results_dir, exist_ok=True)
@@ -323,6 +325,14 @@ class BaseBrowserController(ABC):
                 pass
 
         try:
+            page_diag = self.get_page_diagnostics_state(page)
+            if page_diag.get("events"):
+                with open(f"{base}_page_events.json", "w", encoding="utf-8") as f:
+                    json.dump(page_diag, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
+
+        try:
             self.save_challenge_snapshot(page, email=email, tag=tag)
         except Exception:
             pass
@@ -351,6 +361,110 @@ class BaseBrowserController(ABC):
         if len(text) <= self.capture_network_max_body:
             return text
         return text[:self.capture_network_max_body] + f"\n<truncated {len(text) - self.capture_network_max_body} chars>"
+
+    def _bounded_diagnostic_text(self, text, max_len=3000):
+        if text is None:
+            return ""
+        text = str(text)
+        if len(text) <= max_len:
+            return text
+        return text[:max_len] + f"\n<truncated {len(text) - max_len} chars>"
+
+    def attach_page_diagnostics_logger(self, page, email=None):
+        if not page:
+            return None
+
+        page_key = id(page)
+        with self.page_diagnostics_lock:
+            existing = self.page_diagnostics_state.get(page_key)
+            if existing and existing.get("attached"):
+                return existing.get("log_path")
+
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        safe_email = self._safe_email_for_filename(email)
+        log_path = os.path.join(self.diagnostics_dir, f"{stamp}_{safe_email}_page_events.jsonl")
+
+        def read_member(obj, name, default=None):
+            try:
+                value = getattr(obj, name, default)
+                if callable(value):
+                    return value()
+                return value
+            except Exception:
+                return default
+
+        def append_event(record):
+            record = dict(record or {})
+            record.setdefault("ts", datetime.now().isoformat())
+            with self.page_diagnostics_lock:
+                state = self.page_diagnostics_state.setdefault(
+                    page_key,
+                    {"attached": True, "log_path": log_path, "events": []},
+                )
+                events = state.setdefault("events", [])
+                events.append(record)
+                if len(events) > 300:
+                    del events[:-300]
+            try:
+                with open(log_path, "a", encoding="utf-8") as f:
+                    f.write(json.dumps(record, ensure_ascii=False) + "\n")
+            except Exception:
+                pass
+
+        def on_console(msg):
+            location = read_member(msg, "location", {}) or {}
+            append_event({
+                "event": "console",
+                "type": read_member(msg, "type", ""),
+                "text": self._bounded_diagnostic_text(read_member(msg, "text", "")),
+                "location": {
+                    "url": location.get("url") if isinstance(location, dict) else None,
+                    "lineNumber": location.get("lineNumber") if isinstance(location, dict) else None,
+                    "columnNumber": location.get("columnNumber") if isinstance(location, dict) else None,
+                },
+            })
+
+        def on_page_error(exc):
+            append_event({
+                "event": "pageerror",
+                "error": self._bounded_diagnostic_text(repr(exc), 4000),
+            })
+
+        def on_request_failed(request):
+            failure = read_member(request, "failure", None)
+            append_event({
+                "event": "requestfailed",
+                "method": read_member(request, "method", ""),
+                "url": self._bounded_diagnostic_text(read_member(request, "url", ""), 2500),
+                "resource_type": read_member(request, "resource_type", ""),
+                "failure": self._bounded_diagnostic_text(failure, 1200),
+            })
+
+        try:
+            page.on("console", on_console)
+            page.on("pageerror", on_page_error)
+            page.on("requestfailed", on_request_failed)
+            with self.page_diagnostics_lock:
+                self.page_diagnostics_state[page_key] = {
+                    "attached": True,
+                    "log_path": log_path,
+                    "events": [],
+                }
+            print(f"[Trace] - page diagnostics log: {log_path}")
+            return log_path
+        except Exception as exc:
+            append_event({"event": "diagnostics_attach_error", "error": repr(exc)})
+            return log_path
+
+    def get_page_diagnostics_state(self, page, tail=80):
+        try:
+            with self.page_diagnostics_lock:
+                state = dict(self.page_diagnostics_state.get(id(page), {}))
+                events = list(state.get("events") or [])
+            state["events"] = events[-max(1, int(tail or 1)):]
+            return state
+        except Exception:
+            return {}
 
     def attach_network_logger(self, page, email=None):
         """
@@ -716,6 +830,49 @@ class BaseBrowserController(ABC):
                 except Exception:
                     pass
                 try:
+                    frame_meta["observability"] = frame.evaluate(
+                        """() => {
+                            const body = document.body;
+                            const text = body ? (body.innerText || "") : "";
+                            const captcha = document.querySelector("#px-captcha");
+                            const captchaRect = captcha ? captcha.getBoundingClientRect() : null;
+                            const scripts = Array.from(document.scripts || []).slice(0, 80).map((script, idx) => ({
+                                idx,
+                                src: script.src || "",
+                                async: !!script.async,
+                                defer: !!script.defer,
+                                type: script.type || "",
+                                textLength: (script.textContent || "").length
+                            }));
+                            return {
+                                href: location.href,
+                                readyState: document.readyState,
+                                title: document.title || "",
+                                bodyTextPreview: text.slice(0, 2000),
+                                bodyTextLength: text.length,
+                                scriptCount: (document.scripts || []).length,
+                                scripts,
+                                pxCaptcha: captcha ? {
+                                    childElementCount: captcha.childElementCount,
+                                    innerTextPreview: (captcha.innerText || "").slice(0, 1000),
+                                    htmlLength: (captcha.innerHTML || "").length,
+                                    className: captcha.className || "",
+                                    rect: captchaRect ? {
+                                        x: captchaRect.x,
+                                        y: captchaRect.y,
+                                        width: captchaRect.width,
+                                        height: captchaRect.height
+                                    } : null
+                                } : null,
+                                pxWindowKeys: Object.keys(window)
+                                    .filter(k => /^_px|px|captcha|human/i.test(k))
+                                    .slice(0, 120)
+                            };
+                        }"""
+                    )
+                except Exception as exc:
+                    frame_meta["observability_error"] = repr(exc)
+                try:
                     html = frame.content()
                     if len(html) > self.challenge_dump_max_html:
                         html = html[:self.challenge_dump_max_html] + "\n<!-- truncated -->"
@@ -728,6 +885,16 @@ class BaseBrowserController(ABC):
                 meta["frames"].append(frame_meta)
         except Exception as exc:
             meta["frames_error"] = repr(exc)
+
+        try:
+            page_diag = self.get_page_diagnostics_state(page)
+            if page_diag:
+                diag_file = "page_diagnostics.json"
+                with open(os.path.join(base_dir, diag_file), "w", encoding="utf-8") as f:
+                    json.dump(page_diag, f, ensure_ascii=False, indent=2)
+                meta["page_diagnostics_file"] = diag_file
+        except Exception as exc:
+            meta["page_diagnostics_error"] = repr(exc)
 
         with open(os.path.join(base_dir, "meta.json"), "w", encoding="utf-8") as f:
             json.dump(meta, f, ensure_ascii=False, indent=2)
@@ -1008,6 +1175,7 @@ class BaseBrowserController(ABC):
                 return False
 
         self.attach_network_logger(page, email)
+        self.attach_page_diagnostics_logger(page, email)
 
         def install_early_risk_initialize_protocol_observer():
             cache = {

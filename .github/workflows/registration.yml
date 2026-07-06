@@ -248,8 +248,10 @@ jobs:
           if (Test-Path .\Results) {
             Get-ChildItem .\Results -Recurse -File |
               Sort-Object LastWriteTime -Descending |
-              Select-Object -First 30 FullName,Length,LastWriteTime |
-              Format-Table -AutoSize
+              Select-Object -First 80 |
+              ForEach-Object {
+                Write-Host ("ARTIFACT {0} bytes {1:o} {2}" -f $_.Length, $_.LastWriteTime, $_.FullName)
+              }
           } else {
             Write-Host "No Results directory produced"
           }
