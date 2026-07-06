@@ -39,6 +39,10 @@ on:
         description: "Hold input mode: hybrid_cdp, hybrid_legacy_up, legacy_page, cdp_dense, cdp_sparse, native_sendinput, native_sendinput_sparse, hybrid_page_forclick, hybrid_async_release, or oopif_cdp"
         required: false
         default: "hybrid_cdp"
+      signup_entry_mode:
+        description: "Signup entry mode: msal_authorize or outlook"
+        required: false
+        default: "msal_authorize"
 
 permissions:
   contents: read
@@ -174,6 +178,11 @@ jobs:
           }
           $inputMode = "${{ inputs.input_mode }}"
           if ([string]::IsNullOrWhiteSpace($inputMode)) { $inputMode = "hybrid_cdp" }
+          $signupEntryMode = "${{ inputs.signup_entry_mode }}"
+          if ([string]::IsNullOrWhiteSpace($signupEntryMode)) { $signupEntryMode = "msal_authorize" }
+          if ($signupEntryMode -notin @("msal_authorize", "outlook")) {
+            throw "Unsupported signup_entry_mode=$signupEntryMode"
+          }
           $flowAttempts = [int]"${{ inputs.flow_attempts }}"
           if ($flowAttempts -lt 1) { $flowAttempts = 1 }
           if ($flowAttempts -gt 3) { $flowAttempts = 3 }
@@ -236,7 +245,7 @@ jobs:
               throw "Unsupported input_mode=$inputMode"
             }
           }
-          Write-Host "LIVE_INPUT_MODE=$inputMode abort_on_score1=$abortOnScore1 args=$($inputArgs -join ' ')"
+          Write-Host "LIVE_INPUT_MODE=$inputMode signup_entry_mode=$signupEntryMode abort_on_score1=$abortOnScore1 args=$($inputArgs -join ' ')"
           $lastExit = 1
           for ($flowAttempt = 1; $flowAttempt -le $flowAttempts; $flowAttempt++) {
             Write-Host "LIVE_FLOW_ATTEMPT=$flowAttempt/$flowAttempts"
@@ -261,7 +270,7 @@ jobs:
               -PreholdLoadedMinAgeMs 0 `
               -RealTargetWaitMs 20000 `
               -RetryAfterMs 7000 `
-              -SignupEntryMode msal_authorize `
+              -SignupEntryMode $signupEntryMode `
               -SignupFillMode protocol_takeover_thin `
               -W0ResponseMode real_final_neutral_w0_success `
               -W0ResponseWaitMs 3500 `
