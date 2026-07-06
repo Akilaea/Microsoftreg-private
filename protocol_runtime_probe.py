@@ -9058,18 +9058,42 @@ def protocol_time_warp_hold(
                       try {
                         let direct = false;
                         let prestarted = false;
+                        let qi = "";
                         if (typeof window.__pxProbeKnpPrestartLatest === "function") {
                           prestarted = !!window.__pxProbeKnpPrestartLatest(reason || "direct");
                           direct = true;
                         } else {
                           window.postMessage({ __pxProbeKnpPrestart: { reason: reason || "message" } }, "*");
                         }
+                        let ready = false;
+                        let readySource = "";
+                        let hasEn = false;
+                        try {
+                          const s = window.__pxProbe || {};
+                          qi = String(
+                            s.lastChallengeQi ||
+                            s.externalChallengeQi ||
+                            s.lastCollectorQi ||
+                            s.lastCollectorQiHint ||
+                            ""
+                          );
+                          const exact = qi && s.knpByQi && s.knpByQi[qi];
+                          const fallback = qi && s.fallbackKnpByQi && s.fallbackKnpByQi[qi];
+                          const data = exact || fallback || null;
+                          ready = !!data;
+                          readySource = exact ? "exact_qi" : (fallback ? "fallback_qi" : "");
+                          hasEn = !!(data && data["U0MpSRYgLHo="] && data["U0MpSRYgLHo="].en);
+                        } catch (_) {}
                         return {
                           ok: true,
                           href: location.href,
                           isChctx: String(location.href || "").indexOf("ch_ctx=1") >= 0,
                           direct,
-                          prestarted
+                          prestarted,
+                          qi,
+                          ready,
+                          readySource,
+                          hasEn
                         };
                       } catch (e) {
                         return {ok: false, href: location.href, error: String(e && e.message || e)};
@@ -9084,16 +9108,33 @@ def protocol_time_warp_hold(
                         "isChctx": res.get("isChctx"),
                         "direct": res.get("direct"),
                         "prestarted": res.get("prestarted"),
+                        "qi": res.get("qi"),
+                        "ready": res.get("ready"),
+                        "readySource": res.get("readySource"),
+                        "hasEn": res.get("hasEn"),
                     })
                 else:
                     failures.append({"idx": idx, "res": res})
             except Exception:
                 failures.append({"idx": idx, "error": "evaluate_exception"})
                 continue
-        ok_count = sum(1 for item in results if item.get("prestarted"))
-        print(f"[Probe] knp prestart {reason}: frames={len(results)} ok={ok_count} failures={len(failures)}")
+        prestart_count = sum(1 for item in results if item.get("prestarted"))
+        ready_count = sum(
+            1
+            for item in results
+            if item.get("ready") and item.get("hasEn") and item.get("readySource") == "exact_qi"
+        )
+        print(
+            f"[Probe] knp prestart {reason}: frames={len(results)} "
+            f"prestarted={prestart_count} ready={ready_count} failures={len(failures)}"
+        )
         for item in results[:6]:
-            print(f"  knp frame[{item['idx']}] {item['href']} chctx={item.get('isChctx')} direct={item.get('direct')} prestarted={item.get('prestarted')}")
+            print(
+                f"  knp frame[{item['idx']}] {item['href']} chctx={item.get('isChctx')} "
+                f"direct={item.get('direct')} prestarted={item.get('prestarted')} "
+                f"ready={item.get('ready')} hasEn={item.get('hasEn')} "
+                f"source={item.get('readySource') or '-'} qi={item.get('qi') or '-'}"
+            )
         for item in failures[:3]:
             print(f"  knp miss frame[{item['idx']}] {str(item.get('res') or item.get('error'))[:180]}")
         page.wait_for_timeout(40)
@@ -10157,7 +10198,9 @@ def protocol_time_warp_hold(
                 knp_ok = sum(
                     1
                     for item in knp_results
-                    if item.get("prestarted")
+                    if item.get("ready")
+                    and item.get("hasEn")
+                    and item.get("readySource") == "exact_qi"
                     and (not require_chctx_runtime_ready or item.get("isChctx"))
                 )
                 if knp_ok >= effective_min_knp:
@@ -10165,7 +10208,7 @@ def protocol_time_warp_hold(
                 if knp_try + 1 >= max_knp_tries:
                     break
                 print(
-                    "[Probe] prehold hook guard: KNP prestart not ready "
+                    "[Probe] prehold hook guard: exact KNP ready/en not observed "
                     f"ok={knp_ok}/{effective_min_knp} eligible={eligible_knp} "
                     f"try={knp_try + 1}/{max_knp_tries}; waiting before retry"
                 )
@@ -10179,7 +10222,7 @@ def protocol_time_warp_hold(
                 ready_label = "ch_ctx KNP" if require_chctx_runtime_ready else "KNP"
                 print(
                     "[Probe] prehold hook guard: aborting before mouse input "
-                    f"because {ready_label} prestart coverage is too low "
+                    f"because {ready_label} exact ready/en coverage is too low "
                     f"ok={knp_ok}/{effective_min_knp} configured_min={min_knp} eligible={eligible_knp}"
                 )
                 try:

@@ -274,7 +274,7 @@ jobs:
               -RequireChctxRuntimeReady `
               -MinRuntimeHookReadyFrames 6 `
               -MinKnpPrestartOk 5 `
-              -PreholdHookGuardRetries 2 `
+              -PreholdHookGuardRetries 10 `
               -PreholdReadinessGateMs 3200 `
               -PreholdLoadedMinAgeMs 0 `
               -RealTargetWaitMs 20000 `
