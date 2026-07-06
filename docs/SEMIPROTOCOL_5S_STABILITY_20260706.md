@@ -123,7 +123,7 @@ Web 澳大利亚I-标准: create_account_200
 ## 当前推荐命令
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .un_mihomo_semiprotocol_5s_batch.ps1 `
+powershell -ExecutionPolicy Bypass -File .\run_mihomo_semiprotocol_5s_batch.ps1 `
   -MaxNodes 2 `
   -RunsPerNode 1 `
   -RegisterTimeoutSec 420 `
@@ -137,7 +137,7 @@ powershell -ExecutionPolicy Bypass -File .un_mihomo_semiprotocol_5s_batch.ps1 `
 单次：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .un_semiprotocol_5s_once.ps1 `
+powershell -ExecutionPolicy Bypass -File .\run_semiprotocol_5s_once.ps1 `
   -CheckAvailablePrefetchMode off `
   -SubmitMode dom_fast `
   -NameSubmitMode native
