@@ -26,7 +26,11 @@ on:
       flow_attempts:
         description: "Fresh full-flow attempts within the live registration step"
         required: false
-        default: "2"
+        default: "3"
+      abort_on_score1:
+        description: "Abort the current fresh flow when collector score|1 is observed"
+        required: false
+        default: "true"
       thin_bootstrap_wait_ms:
         description: "Thin bootstrap wait budget in milliseconds"
         required: false
@@ -173,6 +177,15 @@ jobs:
           $flowAttempts = [int]"${{ inputs.flow_attempts }}"
           if ($flowAttempts -lt 1) { $flowAttempts = 1 }
           if ($flowAttempts -gt 3) { $flowAttempts = 3 }
+          $abortScore1Raw = "${{ inputs.abort_on_score1 }}"
+          $abortOnScore1 = $true
+          if (-not [string]::IsNullOrWhiteSpace($abortScore1Raw)) {
+            $abortOnScore1 = $abortScore1Raw.Trim().ToLowerInvariant() -notin @("false", "0", "no", "off")
+          }
+          $guardArgs = @()
+          if ($abortOnScore1) {
+            $guardArgs += "-AbortOnScore1"
+          }
           $inputArgs = @()
           switch ($inputMode) {
             "hybrid_cdp" {
@@ -223,7 +236,7 @@ jobs:
               throw "Unsupported input_mode=$inputMode"
             }
           }
-          Write-Host "LIVE_INPUT_MODE=$inputMode args=$($inputArgs -join ' ')"
+          Write-Host "LIVE_INPUT_MODE=$inputMode abort_on_score1=$abortOnScore1 args=$($inputArgs -join ' ')"
           $lastExit = 1
           for ($flowAttempt = 1; $flowAttempt -le $flowAttempts; $flowAttempt++) {
             Write-Host "LIVE_FLOW_ATTEMPT=$flowAttempt/$flowAttempts"
@@ -239,6 +252,7 @@ jobs:
               -W0Policy after160 `
               -NoSyntheticU0 `
               @inputArgs `
+              @guardArgs `
               -RequireChctxRuntimeReady `
               -MinRuntimeHookReadyFrames 6 `
               -MinKnpPrestartOk 5 `
@@ -285,7 +299,7 @@ jobs:
             Select-Object -First 1
           if ($latestProbe) {
             Write-Host "LATEST_PROBE_LOG=$($latestProbe.FullName)"
-            Select-String -LiteralPath $latestProbe.FullName -Pattern "riskblock|risk/verify|CreateAccount|outlook_register result|Success: Email Registration|prehold readiness|captcha protocol success|collector response|result\\|0|timed out" |
+            Select-String -LiteralPath $latestProbe.FullName -Pattern "riskblock|risk/verify|CreateAccount|outlook_register result|Success: Email Registration|prehold readiness|captcha protocol success|collector response|result\|0|score\|1|timed out|aborting .*score" |
               Select-Object -Last 40 |
               ForEach-Object { Write-Host "LIVE_SIGNAL $($_.Line)" }
           }

@@ -42,6 +42,7 @@ param(
     [int]$PreholdHookGuardRetries = 2,
     [int]$PreholdReadinessGateMs = 0,
     [int]$PreholdLoadedMinAgeMs = 0,
+    [switch]$AbortOnScore1,
     [int]$RealTargetWaitMs = 12000,
     [ValidateSet("default", "natural_long")]
     [string]$Px1200TimingProfile = "default",
@@ -389,6 +390,10 @@ if ($RequireChctxRuntimeReady) {
     $cmd += "--require-chctx-runtime-ready"
 }
 
+if ($AbortOnScore1) {
+    $cmd += "--abort-on-score1"
+}
+
 if ($PreholdHookGuardRetries -ne 2) {
     $cmd += @("--prehold-hook-guard-retries", "$PreholdHookGuardRetries")
 }
@@ -400,7 +405,7 @@ if ($PreholdLoadedMinAgeMs -gt 0) {
     $cmd += @("--prehold-loaded-min-age-ms", "$PreholdLoadedMinAgeMs")
 }
 
-Write-Host "[protocol1s-restart] wall=$WallMs hold=$HoldMs stopDelay=$StopDelayMs prewait=$PrewaitMs preDownDwell=$PreDownDwellMs botWait=$BotProtectionWaitSec entry=$SignupEntryMode fill=$SignupFillMode cloak=$(-not $NoCloakBrowser.IsPresent) normalizer=$FinalProofNormalizer w0=$W0Policy before=$earlyW0Before after=$earlyW0After w0Response=$W0ResponseMode w0Wait=$W0ResponseWaitMs w0InitialDelay=$SessionCachedRichInitialW0DelayMs asyncEarlyW0=$($AsyncEarlyCachedRichW0.IsPresent) finalRespDelay=$FinalResponseDelayMs delayClose=$DelayCaptchaCloseMs riskGate=$RiskVerifyGateMs/$RiskVerifyGateTimeoutMs humanSuccessGate=$RiskVerifyHumanSuccessAgeMs/$RiskVerifyHumanSuccessTimeoutMs closeGrace=$CaptchaCloseGraceMs chctxGuard=$($RequireChctxRuntimeReady.IsPresent) riskContinue=$($RiskVerifyChallengeToContinue.IsPresent) syntheticU0=$(-not $NoSyntheticU0.IsPresent) u0Lead=$SyntheticU0LeadMs exactKnp=$ExactKnpWaitMs/$ExactKnpFallbackGraceMs preserveBfa=$($PreserveFinalBfa.IsPresent) optimisticFinal=$($OptimisticFinalSuccess.IsPresent) rewriteFinal=$($RewriteFinalResultSuccess.IsPresent) triggerSignals=$($TriggerFinalSuccessSignals.IsPresent) forceFinal=$($ForceSyntheticFinalOnTimeout.IsPresent) forceBfa=$($ForceSyntheticFinalPreserveBfa.IsPresent) forceAfterHoldMs=$ForceSyntheticFinalAfterHoldMs forceNoU0=$($ForceSyntheticFinalNoU0.IsPresent) suppressNaturalFinal=$($SuppressUnforcedFinalForSynthetic.IsPresent) legacyInput=$($LegacyShortHoldInput.IsPresent) hybridDownCdp=$($HybridLegacyDownCdpMoveUp.IsPresent) hybridDownCdpLegacyUp=$($HybridLegacyDownCdpMoveLegacyUp.IsPresent) hybridPageMoves=$HybridPageMoveCount hybridMoveForClick=$($HybridPageMoveForClick.IsPresent) hybridMoveNoReply=$($HybridPageMoveNoReply.IsPresent) legacySteps=$LegacyShortHoldSteps asyncRawReleaseMs=$AsyncRawCdpReleaseMs asyncRawNoWait=$($AsyncRawCdpReleaseNoWait.IsPresent) oopifCdp=$($OopifCdpHoldInput.IsPresent) oopifNoWait=$($OopifCdpNoWait.IsPresent) nativeSendInput=$($NativeSendInputHoldInput.IsPresent) rawCdpEndpoint=$RawCdpEndpoint readinessGate=$PreholdReadinessGateMs loadedMinAge=$PreholdLoadedMinAgeMs realTargetWait=$RealTargetWaitMs"
+Write-Host "[protocol1s-restart] wall=$WallMs hold=$HoldMs stopDelay=$StopDelayMs prewait=$PrewaitMs preDownDwell=$PreDownDwellMs botWait=$BotProtectionWaitSec entry=$SignupEntryMode fill=$SignupFillMode cloak=$(-not $NoCloakBrowser.IsPresent) normalizer=$FinalProofNormalizer w0=$W0Policy before=$earlyW0Before after=$earlyW0After w0Response=$W0ResponseMode w0Wait=$W0ResponseWaitMs w0InitialDelay=$SessionCachedRichInitialW0DelayMs asyncEarlyW0=$($AsyncEarlyCachedRichW0.IsPresent) finalRespDelay=$FinalResponseDelayMs delayClose=$DelayCaptchaCloseMs riskGate=$RiskVerifyGateMs/$RiskVerifyGateTimeoutMs humanSuccessGate=$RiskVerifyHumanSuccessAgeMs/$RiskVerifyHumanSuccessTimeoutMs closeGrace=$CaptchaCloseGraceMs chctxGuard=$($RequireChctxRuntimeReady.IsPresent) riskContinue=$($RiskVerifyChallengeToContinue.IsPresent) syntheticU0=$(-not $NoSyntheticU0.IsPresent) u0Lead=$SyntheticU0LeadMs exactKnp=$ExactKnpWaitMs/$ExactKnpFallbackGraceMs preserveBfa=$($PreserveFinalBfa.IsPresent) optimisticFinal=$($OptimisticFinalSuccess.IsPresent) rewriteFinal=$($RewriteFinalResultSuccess.IsPresent) triggerSignals=$($TriggerFinalSuccessSignals.IsPresent) forceFinal=$($ForceSyntheticFinalOnTimeout.IsPresent) forceBfa=$($ForceSyntheticFinalPreserveBfa.IsPresent) forceAfterHoldMs=$ForceSyntheticFinalAfterHoldMs forceNoU0=$($ForceSyntheticFinalNoU0.IsPresent) suppressNaturalFinal=$($SuppressUnforcedFinalForSynthetic.IsPresent) legacyInput=$($LegacyShortHoldInput.IsPresent) hybridDownCdp=$($HybridLegacyDownCdpMoveUp.IsPresent) hybridDownCdpLegacyUp=$($HybridLegacyDownCdpMoveLegacyUp.IsPresent) hybridPageMoves=$HybridPageMoveCount hybridMoveForClick=$($HybridPageMoveForClick.IsPresent) hybridMoveNoReply=$($HybridPageMoveNoReply.IsPresent) legacySteps=$LegacyShortHoldSteps asyncRawReleaseMs=$AsyncRawCdpReleaseMs asyncRawNoWait=$($AsyncRawCdpReleaseNoWait.IsPresent) oopifCdp=$($OopifCdpHoldInput.IsPresent) oopifNoWait=$($OopifCdpNoWait.IsPresent) nativeSendInput=$($NativeSendInputHoldInput.IsPresent) rawCdpEndpoint=$RawCdpEndpoint readinessGate=$PreholdReadinessGateMs loadedMinAge=$PreholdLoadedMinAgeMs abortOnScore1=$($AbortOnScore1.IsPresent) realTargetWait=$RealTargetWaitMs"
 Write-Host "[protocol1s-restart] config=$EffectiveConfig profile=$FreshProfilePrefix proxy=$EffectiveProxyUrl"
 
 if ($DryRun) {
