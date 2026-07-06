@@ -26,6 +26,7 @@ class PatchrightController(BaseBrowserController):
         self.cdp_keep_open = bool(patchright_config.get("cdp_keep_open", True))
         self.connected_over_cdp = False
         self.use_cloakbrowser = bool(patchright_config.get("use_cloakbrowser", False))
+        self.extra_args = list(patchright_config.get("args") or [])
         self.cloakbrowser_options = data.get("cloakbrowser", {})
         self.headless = bool(
             patchright_config.get("headless", data.get("headless", False))
@@ -132,7 +133,8 @@ class PatchrightController(BaseBrowserController):
                 "headless": self.headless,
                 "args": [
                     '--lang=zh-CN',
-                    '--disable-blink-features=AutomationControlled'
+                    '--disable-blink-features=AutomationControlled',
+                    *self.extra_args,
                 ],
                 "proxy": proxy_settings,
             }

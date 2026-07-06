@@ -10817,6 +10817,11 @@ def main():
         help="Connect to an already launched browser over CDP, e.g. CloakBrowser's http://127.0.0.1:<port> or ws://... endpoint.",
     )
     parser.add_argument(
+        "--raw-cdp-endpoint",
+        default=None,
+        help="Use this DevTools HTTP endpoint only for raw input helpers; unlike --cdp-endpoint it does not change how the browser is launched.",
+    )
+    parser.add_argument(
         "--cdp-close-browser",
         action="store_true",
         help="Close the externally connected CDP browser on cleanup. Default keeps it open.",
@@ -11603,7 +11608,7 @@ def main():
                 args.hybrid_page_move_count,
                 args.legacy_short_hold_steps,
                 args.async_raw_cdp_release_ms,
-                args.cdp_endpoint,
+                args.raw_cdp_endpoint or args.cdp_endpoint,
                 args.hybrid_page_move_for_click,
                 args.hybrid_page_move_no_reply,
                 args.async_raw_cdp_release_no_wait,
@@ -11684,6 +11689,5 @@ def main():
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
 
 
