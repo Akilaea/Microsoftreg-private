@@ -1,4 +1,4 @@
-name: Live Registration Flow
+name: Registration Flow
 
 on:
   workflow_dispatch:
