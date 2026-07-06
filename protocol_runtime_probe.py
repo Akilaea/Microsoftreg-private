@@ -8907,6 +8907,26 @@ def protocol_time_warp_hold(
             return True
         return frame_url == "about:blank" or "hsprotect.net" in frame_url
 
+    runtime_active_qi_hint = ""
+
+    def choose_runtime_active_qi(results):
+        counts = {}
+        for item in results or []:
+            try:
+                if not item.get("isChctx"):
+                    continue
+                if not item.get("installed") or not item.get("hasKnpPrestart"):
+                    continue
+                qi = str(item.get("hintedQi") or "")
+                if not qi or qi == "1604064986000":
+                    continue
+                counts[qi] = counts.get(qi, 0) + 1
+            except Exception:
+                continue
+        if not counts:
+            return ""
+        return sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))[0][0]
+
     def install_late_time_warp():
         results = []
         failures = []
@@ -9328,15 +9348,27 @@ def protocol_time_warp_hold(
             scoped_frames = []
             chctx_frames = 0
 
+        responses = list((capture_state.get("responses") if isinstance(capture_state, dict) else []) or [])
+        signals = list((capture_state.get("signals") if isinstance(capture_state, dict) else []) or [])
         last = capture_state.get("last") if isinstance(capture_state, dict) else None
-        current_qi = str((last or {}).get("qi") or "")
+        last_qi = str((last or {}).get("qi") or "")
+        preferred_qi = str(runtime_active_qi_hint or "")
+        current_qi = preferred_qi or last_qi
+        current_qi_source = "runtime_hint" if preferred_qi else "collector_last"
+        current_resp = last if last_qi == current_qi else None
+        if not current_resp and current_qi:
+            for resp in reversed(responses[-16:]):
+                try:
+                    if str(resp.get("qi") or "") == current_qi:
+                        current_resp = resp
+                        break
+                except Exception:
+                    continue
         if current_qi and current_qi == stable_qi and stable_since:
             qi_stable_ms = int((now - stable_since) * 1000)
         else:
             qi_stable_ms = 0
 
-        responses = list((capture_state.get("responses") if isinstance(capture_state, dict) else []) or [])
-        signals = list((capture_state.get("signals") if isinstance(capture_state, dict) else []) or [])
         y1nz_ready = any(
             str(resp.get("qi") or "") == current_qi
             and "Y1NZWSUzXWs=" in [str(x) for x in (resp.get("tags") or [])]
@@ -9376,8 +9408,9 @@ def protocol_time_warp_hold(
         ]
         return {
             "current_qi": current_qi,
-            "last_seq": str((last or {}).get("seq") or ""),
-            "last_tags": list((last or {}).get("tags") or []),
+            "current_qi_source": current_qi_source,
+            "last_seq": str((current_resp or last or {}).get("seq") or ""),
+            "last_tags": list((current_resp or last or {}).get("tags") or []),
             "qi_stable_ms": qi_stable_ms,
             "collector_pending": pending,
             "scoped_frames": len(scoped_frames),
@@ -9407,7 +9440,7 @@ def protocol_time_warp_hold(
             try:
                 capture_state = getattr(page, "_pxprobe_collector_capture", None) or {}
                 last = capture_state.get("last") if isinstance(capture_state, dict) else None
-                qi_now = str((last or {}).get("qi") or "")
+                qi_now = str(runtime_active_qi_hint or ((last or {}).get("qi") or ""))
                 if qi_now and qi_now != stable_qi:
                     stable_qi = qi_now
                     stable_since = time.time()
@@ -9562,6 +9595,10 @@ def protocol_time_warp_hold(
         max_tries = max(1, int(prehold_hook_guard_retries or 0) + 1)
         for guard_try in range(max_tries):
             runtime_results = install_late_runtime_hook(reason=f"pre_readiness_guard_{guard_try + 1}")
+            hinted_qi = choose_runtime_active_qi(runtime_results)
+            if hinted_qi and hinted_qi != runtime_active_qi_hint:
+                runtime_active_qi_hint = hinted_qi
+                print(f"[Probe] runtime active qi hint={runtime_active_qi_hint}")
             eligible_runtime = sum(1 for item in runtime_results if (not require_chctx_runtime_ready or item.get("isChctx")))
             effective_min_ready = min_ready if min_ready else 0
             ready = sum(
