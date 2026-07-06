@@ -86,6 +86,13 @@ class BaseBrowserController(ABC):
             )
         except Exception:
             self.signup_protocol_takeover_preverify_min_total_ms = 0
+        try:
+            self.signup_protocol_takeover_preverify_min_after_init_ms = int(
+                data.get("signup_protocol_takeover_preverify_min_after_init_ms")
+                or os.environ.get("OUTLOOK_SIGNUP_PROTOCOL_TAKEOVER_PREVERIFY_MIN_AFTER_INIT_MS", "0")
+            )
+        except Exception:
+            self.signup_protocol_takeover_preverify_min_after_init_ms = 0
         self.signup_protocol_takeover_pxvid_fallback = str(
             data.get("signup_protocol_takeover_pxvid_fallback")
             or os.environ.get("OUTLOOK_SIGNUP_PROTOCOL_TAKEOVER_PXVID_FALLBACK", "")
@@ -3191,6 +3198,7 @@ class BaseBrowserController(ABC):
                 risk_init = None
                 risk_init_json = None
                 risk_init_source = "api"
+                risk_init_ready_at = 0.0
                 if bool(getattr(self, "signup_protocol_takeover_use_observed_risk_init", True)):
                     try:
                         wait_ms = max(
@@ -3275,6 +3283,7 @@ class BaseBrowserController(ABC):
                 if not init_token:
                     print(f"[ProtocolTakeoverV1] risk/initialize failed status={risk_init.get('status')} json={risk_init_json}", flush=True)
                     return False
+                risk_init_ready_at = time.time()
 
                 check_url = f"{state.get('origin') or 'https://signup.live.com'}/API/CheckAvailableSigninNames{state.get('search') or ''}"
                 check_body = {
@@ -3389,17 +3398,33 @@ class BaseBrowserController(ABC):
                         )
                     except Exception:
                         min_total_ms = 0
-                    if min_total_ms:
-                        elapsed_total_ms = int((time.time() - fill_phase_t0) * 1000)
-                        wait_ms = max(0, min_total_ms - elapsed_total_ms)
-                        if wait_ms:
-                            write_protocol_takeover_event({
-                                "event": "thin_preverify_pacing_wait",
-                                "min_total_ms": min_total_ms,
-                                "elapsed_total_ms": elapsed_total_ms,
-                                "wait_ms": wait_ms,
-                            })
-                            page.wait_for_timeout(wait_ms)
+                    try:
+                        min_after_init_ms = max(
+                            0,
+                            int(getattr(self, "signup_protocol_takeover_preverify_min_after_init_ms", 0) or 0),
+                        )
+                    except Exception:
+                        min_after_init_ms = 0
+                    elapsed_total_ms = int((time.time() - fill_phase_t0) * 1000)
+                    elapsed_after_init_ms = (
+                        int((time.time() - risk_init_ready_at) * 1000)
+                        if risk_init_ready_at else 0
+                    )
+                    wait_ms = max(
+                        0,
+                        min_total_ms - elapsed_total_ms,
+                        min_after_init_ms - elapsed_after_init_ms,
+                    )
+                    if wait_ms:
+                        write_protocol_takeover_event({
+                            "event": "thin_preverify_pacing_wait",
+                            "min_total_ms": min_total_ms,
+                            "elapsed_total_ms": elapsed_total_ms,
+                            "min_after_init_ms": min_after_init_ms,
+                            "elapsed_after_init_ms": elapsed_after_init_ms,
+                            "wait_ms": wait_ms,
+                        })
+                        page.wait_for_timeout(wait_ms)
                 # Successful natural/semi-protocol samples send the first
                 # risk/verify from the page's own fetch stack.  Using
                 # APIRequestContext here is visibly different (not tied to the
