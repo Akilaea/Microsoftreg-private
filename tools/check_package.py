@@ -12,7 +12,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-EXCLUDED_DIRS = {".git", "Results", "profiles", ".mihomo-isolated", ".release", "__pycache__"}
+EXCLUDED_DIRS = {".git", "Results", "profiles", ".mihomo-isolated", ".release", ".gh-artifacts", "__pycache__"}
 
 
 def package_files(root: Path):

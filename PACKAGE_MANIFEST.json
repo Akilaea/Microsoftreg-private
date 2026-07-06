@@ -9,6 +9,7 @@
     "profiles",
     ".mihomo-isolated",
     ".release",
+    ".gh-artifacts",
     "__pycache__"
   ],
   "current_entry": "run_mihomo_protocol_takeover_thin_batch.ps1",

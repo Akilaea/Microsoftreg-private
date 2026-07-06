@@ -322,6 +322,11 @@ class BaseBrowserController(ABC):
             except Exception:
                 pass
 
+        try:
+            self.save_challenge_snapshot(page, email=email, tag=tag)
+        except Exception:
+            pass
+
     def _safe_email_for_filename(self, email=None):
         return (email or "unknown").replace("@", "_").replace(":", "_").replace("\\", "_").replace("/", "_")
 

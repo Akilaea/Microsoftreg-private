@@ -6,6 +6,7 @@ __pycache__/
 config.ctf.runtime.*.json
 *.bak
 *.bak*
+.gh-artifacts/
 .claude/
 .agents/
 .codex/
