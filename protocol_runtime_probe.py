@@ -8929,6 +8929,31 @@ def protocol_time_warp_hold(
     def score1_detected():
         if not abort_on_score1:
             return None
+        try:
+            capture_state = getattr(page, "_pxprobe_collector_capture", None) or {}
+            responses = list((capture_state.get("responses") if isinstance(capture_state, dict) else []) or [])
+            for resp in reversed(responses[-12:]):
+                try:
+                    scores = [str(x) for x in (resp.get("scores") or [])]
+                    if not any(x.startswith("IoIoIo|score|1|") for x in scores):
+                        continue
+                    qi = str(resp.get("qi") or "")
+                    # The fixed bootstrap qi can emit noisy baseline scores.
+                    # Abort only once the live challenge qi itself has scored.
+                    if not qi or qi == "1604064986000":
+                        continue
+                    return {
+                        "source": "collector_capture",
+                        "qi": qi,
+                        "seq": str(resp.get("seq") or ""),
+                        "rsc": str(resp.get("rsc") or ""),
+                        "status": resp.get("status"),
+                        "scores": scores[:3],
+                    }
+                except Exception:
+                    continue
+        except Exception:
+            pass
         for idx, frame in enumerate(page.frames):
             try:
                 frame_url = frame.url or ""
@@ -11695,4 +11720,3 @@ def main():
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
