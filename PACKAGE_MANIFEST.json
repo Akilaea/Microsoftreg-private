@@ -18,7 +18,7 @@
   "files": [
     ".gitattributes",
     ".github/workflows/ci.yml",
-    ".github/workflows/live-registration.yml",
+    ".github/workflows/registration.yml",
     ".gitignore",
     "ADSPOWER_CDP_RUNBOOK.md",
     "CTF_USAGE.md",
