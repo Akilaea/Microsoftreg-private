@@ -27,6 +27,10 @@ on:
         description: "Thin bootstrap wait budget in milliseconds"
         required: false
         default: "12000"
+      input_mode:
+        description: "Hold input mode: hybrid_cdp, hybrid_legacy_up, legacy_page, cdp_dense, or cdp_sparse"
+        required: false
+        default: "hybrid_cdp"
 
 permissions:
   contents: read
@@ -147,6 +151,32 @@ jobs:
           } else {
             $proxy = $proxyInput
           }
+          $inputMode = "${{ inputs.input_mode }}"
+          if ([string]::IsNullOrWhiteSpace($inputMode)) { $inputMode = "hybrid_cdp" }
+          $inputArgs = @()
+          switch ($inputMode) {
+            "hybrid_cdp" {
+              $inputArgs += "-HybridLegacyDownCdpMoveUp"
+              $inputArgs += @("-LegacyShortHoldSteps", "24")
+            }
+            "hybrid_legacy_up" {
+              $inputArgs += "-HybridLegacyDownCdpMoveLegacyUp"
+              $inputArgs += @("-LegacyShortHoldSteps", "24")
+            }
+            "legacy_page" {
+              $inputArgs += "-LegacyShortHoldInput"
+              $inputArgs += "-NoDenseCdpHoldInput"
+              $inputArgs += @("-LegacyShortHoldSteps", "24")
+            }
+            "cdp_dense" { }
+            "cdp_sparse" {
+              $inputArgs += "-NoDenseCdpHoldInput"
+            }
+            default {
+              throw "Unsupported input_mode=$inputMode"
+            }
+          }
+          Write-Host "LIVE_INPUT_MODE=$inputMode args=$($inputArgs -join ' ')"
           powershell -NoProfile -ExecutionPolicy Bypass -File .\run_1s_protocol_restart_once.ps1 `
             -Config .\config.ctf.runtime.github-actions-live.json `
             -ProxyUrl $proxy `
@@ -158,8 +188,7 @@ jobs:
             -FinalProofNormalizer ads_safe `
             -W0Policy after160 `
             -NoSyntheticU0 `
-            -HybridLegacyDownCdpMoveUp `
-            -LegacyShortHoldSteps 24 `
+            @inputArgs `
             -RequireChctxRuntimeReady `
             -MinRuntimeHookReadyFrames 6 `
             -MinKnpPrestartOk 5 `
