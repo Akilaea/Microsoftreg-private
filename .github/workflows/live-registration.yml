@@ -127,7 +127,12 @@ jobs:
           $cfg.patchright.user_data_dir = ".\profiles\github-actions-live"
           $cfg.patchright.use_cloakbrowser = $false
           $cfg.patchright | Add-Member -NotePropertyName headless -NotePropertyValue $headless -Force
-          $cfg.patchright | Add-Member -NotePropertyName args -NotePropertyValue @("--remote-debugging-port=9222") -Force
+          $inputModeForConfig = "${{ inputs.input_mode }}"
+          if ($inputModeForConfig -in @("hybrid_async_release", "oopif_cdp")) {
+            $cfg.patchright | Add-Member -NotePropertyName args -NotePropertyValue @("--remote-debugging-port=9222") -Force
+          } elseif ($cfg.patchright.PSObject.Properties.Name -contains "args") {
+            $cfg.patchright.PSObject.Properties.Remove("args")
+          }
           $cfg.playwright.browser_path = $browserPath
           $cfg.playwright.user_data_dir = ".\profiles\github-actions-live"
           $cfg.cloakbrowser.headless = $headless
