@@ -2,7 +2,7 @@
   "package": "outlook-register-current-20260706_185526",
   "created_at": "20260706_185526",
   "source": "C:\\Users\\wdnmd\\Documents\\outlook\\OutlookRegister-main\\OutlookRegister-repo",
-  "included_count": 134,
+  "included_count": 131,
   "excluded_state_dirs": [
     ".git",
     "Results",
@@ -51,9 +51,6 @@
     "controllers/patchright_controller.py",
     "controllers/playwright_controller.py",
     "crcldu_auditor_1781995800000.js",
-    "crcldu_auditor_1781997000000.js",
-    "crcldu_auditor_1781998200000.js",
-    "crcldu_auditor_1781998560000.js",
     "crcldu_sync_1781998200000.html",
     "CTF_USAGE.md",
     "CURRENT_1S_REPRO_RUNBOOK.md",

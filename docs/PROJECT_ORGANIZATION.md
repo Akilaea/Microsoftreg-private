@@ -55,9 +55,10 @@ tools/
 
 ## Duplicate Assets
 
-The four `crcldu_auditor_*.js` files currently have identical content.  They are
-kept in place to preserve timestamp-labelled references from historical notes.
-Use `tools/check_package.py` to report duplicates before making a release.
+The repeated `crcldu_auditor_*.js` snapshots were byte-identical.  The package
+now keeps `crcldu_auditor_1781995800000.js` as the canonical copy and removes
+the duplicate timestamp-labelled copies.  Use `tools/check_package.py` to report
+future duplicates before making a release.
 
 ## Safe Cleanup Rule
 

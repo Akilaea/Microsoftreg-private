@@ -131,9 +131,6 @@ stop_mihomo_isolated.ps1
 
 ```text
 crcldu_auditor_1781995800000.js
-crcldu_auditor_1781997000000.js
-crcldu_auditor_1781998200000.js
-crcldu_auditor_1781998560000.js
 crcldu_sync_1781998200000.html
 current_success_diff.txt
 diff_w0_px.txt
