@@ -59,6 +59,7 @@ param(
     [int]$CaptchaCloseGraceMs = 0,
     [switch]$RiskVerifyChallengeToContinue,
     [switch]$NoSyntheticU0,
+    [switch]$NoCloakBrowser,
     [switch]$NoDenseCdpHoldInput,
     [switch]$LegacyShortHoldInput,
     [switch]$HybridLegacyDownCdpMoveUp,
@@ -97,11 +98,13 @@ if ($EffectiveProxyUrl -in @("__none__", "none", "off", "disabled", "direct")) {
 }
 
 $EffectiveConfig = $Config
-if ($DisableProxyOverride) {
+$ProxyOverrideRequested = $PSBoundParameters.ContainsKey("ProxyUrl")
+if ($DisableProxyOverride -or $ProxyOverrideRequested) {
     $stamp = Get-Date -Format "yyyyMMdd_HHmmss"
-    $EffectiveConfig = ".\config.ctf.runtime.direct-$FreshProfilePrefix.$stamp.json"
+    $proxyLabel = if ($DisableProxyOverride) { "direct" } else { "proxy" }
+    $EffectiveConfig = ".\config.ctf.runtime.$proxyLabel-$FreshProfilePrefix.$stamp.json"
     $cfg = Get-Content -LiteralPath $Config -Raw | ConvertFrom-Json
-    $cfg.proxy = ""
+    $cfg.proxy = $EffectiveProxyUrl
     $json = $cfg | ConvertTo-Json -Depth 100
     # Windows PowerShell's "-Encoding UTF8" writes a BOM, but Python json.load()
     # opens config files as plain utf-8.  Write an explicit UTF-8-no-BOM file.
@@ -132,7 +135,6 @@ $cmd = @(
     ".\protocol_runtime_probe.py",
     "--config", $EffectiveConfig,
     "--fresh-profile-prefix", $FreshProfilePrefix,
-    "--use-cloakbrowser",
     "--cloak-human-preset", "careful",
     "--mode", "time_warp_hold",
     "--route-only-hook",
@@ -165,6 +167,10 @@ $cmd = @(
     "--wait-after-ms", "$WaitAfterMs",
     "--skip-mid-snapshots"
 )
+
+if (-not $NoCloakBrowser) {
+    $cmd += "--use-cloakbrowser"
+}
 
 if ($NoSyntheticU0) {
     $cmd += "--disable-synthetic-u0"
@@ -354,7 +360,7 @@ if ($PreholdLoadedMinAgeMs -gt 0) {
     $cmd += @("--prehold-loaded-min-age-ms", "$PreholdLoadedMinAgeMs")
 }
 
-Write-Host "[protocol1s-restart] wall=$WallMs hold=$HoldMs stopDelay=$StopDelayMs prewait=$PrewaitMs preDownDwell=$PreDownDwellMs botWait=$BotProtectionWaitSec entry=$SignupEntryMode fill=$SignupFillMode normalizer=$FinalProofNormalizer w0=$W0Policy before=$earlyW0Before after=$earlyW0After w0Response=$W0ResponseMode w0Wait=$W0ResponseWaitMs w0InitialDelay=$SessionCachedRichInitialW0DelayMs asyncEarlyW0=$($AsyncEarlyCachedRichW0.IsPresent) finalRespDelay=$FinalResponseDelayMs delayClose=$DelayCaptchaCloseMs riskGate=$RiskVerifyGateMs/$RiskVerifyGateTimeoutMs humanSuccessGate=$RiskVerifyHumanSuccessAgeMs/$RiskVerifyHumanSuccessTimeoutMs closeGrace=$CaptchaCloseGraceMs chctxGuard=$($RequireChctxRuntimeReady.IsPresent) riskContinue=$($RiskVerifyChallengeToContinue.IsPresent) syntheticU0=$(-not $NoSyntheticU0.IsPresent) u0Lead=$SyntheticU0LeadMs exactKnp=$ExactKnpWaitMs/$ExactKnpFallbackGraceMs preserveBfa=$($PreserveFinalBfa.IsPresent) optimisticFinal=$($OptimisticFinalSuccess.IsPresent) rewriteFinal=$($RewriteFinalResultSuccess.IsPresent) triggerSignals=$($TriggerFinalSuccessSignals.IsPresent) forceFinal=$($ForceSyntheticFinalOnTimeout.IsPresent) forceBfa=$($ForceSyntheticFinalPreserveBfa.IsPresent) forceAfterHoldMs=$ForceSyntheticFinalAfterHoldMs forceNoU0=$($ForceSyntheticFinalNoU0.IsPresent) suppressNaturalFinal=$($SuppressUnforcedFinalForSynthetic.IsPresent) legacyInput=$($LegacyShortHoldInput.IsPresent) hybridDownCdp=$($HybridLegacyDownCdpMoveUp.IsPresent) hybridDownCdpLegacyUp=$($HybridLegacyDownCdpMoveLegacyUp.IsPresent) hybridPageMoves=$HybridPageMoveCount legacySteps=$LegacyShortHoldSteps readinessGate=$PreholdReadinessGateMs loadedMinAge=$PreholdLoadedMinAgeMs realTargetWait=$RealTargetWaitMs"
+Write-Host "[protocol1s-restart] wall=$WallMs hold=$HoldMs stopDelay=$StopDelayMs prewait=$PrewaitMs preDownDwell=$PreDownDwellMs botWait=$BotProtectionWaitSec entry=$SignupEntryMode fill=$SignupFillMode cloak=$(-not $NoCloakBrowser.IsPresent) normalizer=$FinalProofNormalizer w0=$W0Policy before=$earlyW0Before after=$earlyW0After w0Response=$W0ResponseMode w0Wait=$W0ResponseWaitMs w0InitialDelay=$SessionCachedRichInitialW0DelayMs asyncEarlyW0=$($AsyncEarlyCachedRichW0.IsPresent) finalRespDelay=$FinalResponseDelayMs delayClose=$DelayCaptchaCloseMs riskGate=$RiskVerifyGateMs/$RiskVerifyGateTimeoutMs humanSuccessGate=$RiskVerifyHumanSuccessAgeMs/$RiskVerifyHumanSuccessTimeoutMs closeGrace=$CaptchaCloseGraceMs chctxGuard=$($RequireChctxRuntimeReady.IsPresent) riskContinue=$($RiskVerifyChallengeToContinue.IsPresent) syntheticU0=$(-not $NoSyntheticU0.IsPresent) u0Lead=$SyntheticU0LeadMs exactKnp=$ExactKnpWaitMs/$ExactKnpFallbackGraceMs preserveBfa=$($PreserveFinalBfa.IsPresent) optimisticFinal=$($OptimisticFinalSuccess.IsPresent) rewriteFinal=$($RewriteFinalResultSuccess.IsPresent) triggerSignals=$($TriggerFinalSuccessSignals.IsPresent) forceFinal=$($ForceSyntheticFinalOnTimeout.IsPresent) forceBfa=$($ForceSyntheticFinalPreserveBfa.IsPresent) forceAfterHoldMs=$ForceSyntheticFinalAfterHoldMs forceNoU0=$($ForceSyntheticFinalNoU0.IsPresent) suppressNaturalFinal=$($SuppressUnforcedFinalForSynthetic.IsPresent) legacyInput=$($LegacyShortHoldInput.IsPresent) hybridDownCdp=$($HybridLegacyDownCdpMoveUp.IsPresent) hybridDownCdpLegacyUp=$($HybridLegacyDownCdpMoveLegacyUp.IsPresent) hybridPageMoves=$HybridPageMoveCount legacySteps=$LegacyShortHoldSteps readinessGate=$PreholdReadinessGateMs loadedMinAge=$PreholdLoadedMinAgeMs realTargetWait=$RealTargetWaitMs"
 Write-Host "[protocol1s-restart] config=$EffectiveConfig profile=$FreshProfilePrefix proxy=$EffectiveProxyUrl"
 
 if ($DryRun) {
@@ -378,4 +384,3 @@ if ($latest) {
 }
 
 exit $runExit
-

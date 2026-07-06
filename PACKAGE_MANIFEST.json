@@ -2,7 +2,7 @@
   "package": "outlook-register-current-20260706_185526",
   "created_at": "20260706_185526",
   "source": "C:\\Users\\wdnmd\\Documents\\outlook\\OutlookRegister-main\\OutlookRegister-repo",
-  "included_count": 133,
+  "included_count": 134,
   "excluded_state_dirs": [
     ".git",
     "Results",
@@ -17,6 +17,7 @@
   "files": [
     ".gitattributes",
     ".github/workflows/ci.yml",
+    ".github/workflows/live-registration.yml",
     ".gitignore",
     "ADSPOWER_CDP_RUNBOOK.md",
     "CTF_USAGE.md",

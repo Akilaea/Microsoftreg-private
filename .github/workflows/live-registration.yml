@@ -1,0 +1,168 @@
+name: Live Registration Flow
+
+on:
+  workflow_dispatch:
+    inputs:
+      proxy_url:
+        description: "Proxy URL for the live run, or direct/off/none to disable proxy"
+        required: false
+        default: "direct"
+      wall_ms:
+        description: "Visible hold wall time in milliseconds"
+        required: false
+        default: "5000"
+      timeout_minutes:
+        description: "Timeout for the live registration step"
+        required: false
+        default: "10"
+
+permissions:
+  contents: read
+
+jobs:
+  live-registration:
+    name: Live registration smoke
+    runs-on: windows-latest
+    timeout-minutes: 20
+    env:
+      PYTHONIOENCODING: utf-8
+      OUTLOOK_REGISTER_HEADLESS: "1"
+
+    steps:
+      - name: Disable Git line-ending conversion
+        shell: powershell
+        run: git config --global core.autocrlf false
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Preserve repository line endings
+        shell: powershell
+        run: |
+          git config core.autocrlf false
+          git reset --hard HEAD
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Python and browser dependencies
+        shell: powershell
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m playwright install chromium
+          python -m patchright install chromium
+
+      - name: Prepare GitHub Actions runtime config
+        shell: powershell
+        run: |
+          $proxy = "${{ inputs.proxy_url }}"
+          if ([string]::IsNullOrWhiteSpace($proxy)) { $proxy = "direct" }
+          if ($proxy -notin @("direct", "off", "none", "disabled", "__none__")) {
+            Write-Host "::add-mask::$proxy"
+          }
+
+          $browserCandidates = @(
+            "$env:ProgramFiles\Google\Chrome\Application\chrome.exe",
+            "${env:ProgramFiles(x86)}\Google\Chrome\Application\chrome.exe",
+            "$env:LOCALAPPDATA\ms-playwright\chromium-*\chrome-win\chrome.exe"
+          )
+          $browserPath = ""
+          foreach ($candidate in $browserCandidates) {
+            $match = Get-ChildItem -Path $candidate -ErrorAction SilentlyContinue |
+              Sort-Object LastWriteTime -Descending |
+              Select-Object -First 1
+            if ($match) {
+              $browserPath = $match.FullName
+              break
+            }
+          }
+          if (-not $browserPath) {
+            throw "No Chromium/Chrome executable found after browser install"
+          }
+
+          $cfg = Get-Content -LiteralPath .\config.ctf.runtime.protocol1s-adssafe-stab-5-20260705_033428.manual.20260705_033428.json -Raw |
+            ConvertFrom-Json
+          if ($proxy -in @("direct", "off", "none", "disabled", "__none__")) {
+            $cfg.proxy = ""
+          } else {
+            $cfg.proxy = $proxy
+          }
+          $cfg.patchright.browser_path = $browserPath
+          $cfg.patchright.user_data_dir = ".\profiles\github-actions-live"
+          $cfg.patchright.use_cloakbrowser = $false
+          $cfg.patchright | Add-Member -NotePropertyName headless -NotePropertyValue $true -Force
+          $cfg.playwright.browser_path = $browserPath
+          $cfg.playwright.user_data_dir = ".\profiles\github-actions-live"
+          $cfg.cloakbrowser.headless = $true
+
+          $json = $cfg | ConvertTo-Json -Depth 100
+          [System.IO.File]::WriteAllText(
+            (Resolve-Path .).Path + "\config.ctf.runtime.github-actions-live.json",
+            $json,
+            [System.Text.UTF8Encoding]::new($false)
+          )
+          Write-Host "GITHUB_ACTIONS_LIVE_CONFIG_OK browser=$browserPath proxy=$($cfg.proxy)"
+
+      - name: Run full live registration flow
+        shell: powershell
+        timeout-minutes: ${{ fromJSON(inputs.timeout_minutes) }}
+        run: |
+          $proxy = "${{ inputs.proxy_url }}"
+          if ([string]::IsNullOrWhiteSpace($proxy)) { $proxy = "direct" }
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\run_1s_protocol_restart_once.ps1 `
+            -Config .\config.ctf.runtime.github-actions-live.json `
+            -ProxyUrl $proxy `
+            -NoCloakBrowser `
+            -WallMs ${{ inputs.wall_ms }} `
+            -HoldMs 13000 `
+            -StopDelayMs 900 `
+            -PreDownDwellMs 900 `
+            -FinalProofNormalizer ads_safe `
+            -W0Policy after160 `
+            -NoSyntheticU0 `
+            -HybridLegacyDownCdpMoveUp `
+            -LegacyShortHoldSteps 24 `
+            -RequireChctxRuntimeReady `
+            -MinRuntimeHookReadyFrames 6 `
+            -MinKnpPrestartOk 5 `
+            -PreholdHookGuardRetries 2 `
+            -PreholdReadinessGateMs 1800 `
+            -RealTargetWaitMs 20000 `
+            -RetryAfterMs 7000 `
+            -SignupEntryMode msal_authorize `
+            -SignupFillMode protocol_takeover_thin `
+            -W0ResponseMode real_final_neutral_w0_success `
+            -W0ResponseWaitMs 3500 `
+            -DelayCaptchaCloseMs 8000 `
+            -CaptchaCloseGraceMs 3000 `
+            -RiskVerifyGateMs 1450 `
+            -RiskVerifyGateTimeoutMs 9000 `
+            -RiskVerifyHumanSuccessAgeMs 650 `
+            -RiskVerifyHumanSuccessTimeoutMs 3000 `
+            -PreserveFinalBfa
+
+      - name: Summarize live artifacts
+        if: always()
+        shell: powershell
+        run: |
+          if (Test-Path .\Results) {
+            Get-ChildItem .\Results -Recurse -File |
+              Sort-Object LastWriteTime -Descending |
+              Select-Object -First 30 FullName,Length,LastWriteTime |
+              Format-Table -AutoSize
+          } else {
+            Write-Host "No Results directory produced"
+          }
+
+      - name: Upload live artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: live-registration-results
+          path: |
+            Results/**
+            config.ctf.runtime.github-actions-live.json
+          if-no-files-found: ignore

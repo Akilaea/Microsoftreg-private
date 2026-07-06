@@ -27,6 +27,10 @@ class PatchrightController(BaseBrowserController):
         self.connected_over_cdp = False
         self.use_cloakbrowser = bool(patchright_config.get("use_cloakbrowser", False))
         self.cloakbrowser_options = data.get("cloakbrowser", {})
+        self.headless = bool(
+            patchright_config.get("headless", data.get("headless", False))
+            or str(os.environ.get("OUTLOOK_REGISTER_HEADLESS", "")).lower() in {"1", "true", "yes", "on"}
+        )
         self._last_mouse_pos = None
 
     def launch_browser(self):
@@ -125,7 +129,7 @@ class PatchrightController(BaseBrowserController):
             } if self.proxy else None
 
             launch_kwargs = {
-                "headless": False,
+                "headless": self.headless,
                 "args": [
                     '--lang=zh-CN',
                     '--disable-blink-features=AutomationControlled'
