@@ -16,6 +16,10 @@ jobs:
     timeout-minutes: 20
 
     steps:
+      - name: Disable Git line-ending conversion
+        shell: powershell
+        run: git config --global core.autocrlf false
+
       - name: Checkout
         uses: actions/checkout@v4
 
