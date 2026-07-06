@@ -8926,11 +8926,16 @@ def protocol_time_warp_hold(
             print(f"  late miss frame[{item['idx']}] {item.get('href')} error={item.get('error')}")
         return results
 
-    def score1_detected():
+    def score1_detected(active_qi: str = ""):
         if not abort_on_score1:
             return None
         try:
             capture_state = getattr(page, "_pxprobe_collector_capture", None) or {}
+            if not active_qi and isinstance(capture_state, dict):
+                try:
+                    active_qi = str(((capture_state.get("last") or {}).get("qi")) or "")
+                except Exception:
+                    active_qi = ""
             responses = list((capture_state.get("responses") if isinstance(capture_state, dict) else []) or [])
             for resp in reversed(responses[-12:]):
                 try:
@@ -8942,9 +8947,12 @@ def protocol_time_warp_hold(
                     # Abort only once the live challenge qi itself has scored.
                     if not qi or qi == "1604064986000":
                         continue
+                    if active_qi and qi != active_qi:
+                        continue
                     return {
                         "source": "collector_capture",
                         "qi": qi,
+                        "active_qi": active_qi,
                         "seq": str(resp.get("seq") or ""),
                         "rsc": str(resp.get("rsc") or ""),
                         "status": resp.get("status"),
@@ -8954,6 +8962,8 @@ def protocol_time_warp_hold(
                     continue
         except Exception:
             pass
+        if active_qi:
+            return None
         for idx, frame in enumerate(page.frames):
             try:
                 frame_url = frame.url or ""
@@ -9500,6 +9510,7 @@ def protocol_time_warp_hold(
         install_late_time_warp()
 
     prehold_ready = wait_prehold_readiness()
+    active_score_qi = str((prehold_ready or {}).get("current_qi") or "")
     if int(prehold_readiness_gate_ms or 0) > 0 and prehold_ready and not prehold_ready.get("ready"):
         print(
             "[Probe] prehold readiness gate: aborting before mouse input "
@@ -9521,7 +9532,7 @@ def protocol_time_warp_hold(
         pass
 
     try:
-        s1 = score1_detected()
+        s1 = score1_detected(active_score_qi)
         if s1:
             print(f"[Probe] time_warp_hold: aborting before input because score|1 detected: {s1}")
             return False
@@ -10372,7 +10383,7 @@ def protocol_time_warp_hold(
 
     while time.time() < deadline:
         try:
-            s1 = score1_detected()
+            s1 = score1_detected(active_score_qi)
             if s1:
                 print(f"[Probe] time_warp_hold: aborting after hold because score|1 detected: {s1}")
                 return False
