@@ -9109,16 +9109,62 @@ def protocol_time_warp_hold(
             return ""
         return ""
 
-    def install_late_runtime_hook():
+    def collector_capture_hint(preferred_qi: str = ""):
+        try:
+            capture_state = getattr(page, "_pxprobe_collector_capture", None) or {}
+        except Exception:
+            capture_state = {}
+        if not isinstance(capture_state, dict):
+            return None
+
+        preferred_qi = str(preferred_qi or "")
+
+        def usable(item, want_body: bool = False):
+            if not isinstance(item, dict):
+                return False
+            qi = str(item.get("qi") or "")
+            if not qi or qi == "1604064986000":
+                return False
+            if preferred_qi and qi != preferred_qi:
+                return False
+            if want_body and not item.get("body"):
+                return False
+            return True
+
+        if preferred_qi:
+            for item in reversed(list(capture_state.get("items") or [])):
+                if usable(item, want_body=True):
+                    return item
+            for item in reversed(list(capture_state.get("responses") or [])):
+                if usable(item):
+                    return item
+            last = capture_state.get("last") or {}
+            if isinstance(last, dict):
+                hint = {
+                    "qi": preferred_qi,
+                    "uuid": last.get("uuid") or "",
+                    "appId": last.get("appId") or "PXzC5j78di",
+                    "seq": "",
+                    "rsc": "",
+                    "tags": [],
+                }
+                return hint
+            return {"qi": preferred_qi, "appId": "PXzC5j78di"}
+
+        last = capture_state.get("last")
+        if usable(last):
+            return last
+        for item in reversed(list(capture_state.get("items") or [])):
+            if usable(item, want_body=True):
+                return item
+        return None
+
+    def install_late_runtime_hook(hint_qi: str = "", reason: str = "late"):
         if not runtime_hook_js:
             print("[Probe] late runtime hook skipped: no hook js")
             return []
-        capture_hint = None
-        try:
-            capture_state = getattr(page, "_pxprobe_collector_capture", None) or {}
-            capture_hint = capture_state.get("last") if isinstance(capture_state, dict) else None
-        except Exception:
-            capture_hint = None
+        capture_hint = collector_capture_hint(hint_qi)
+        hinted_qi = str((capture_hint or {}).get("qi") or "")
         results = []
         failures = []
         for idx, frame in enumerate(page.frames):
@@ -9200,7 +9246,10 @@ def protocol_time_warp_hold(
             except Exception as exc:
                 failures.append({"idx": idx, "error": repr(exc)[:160]})
         ok_count = sum(1 for item in results if item.get("installed"))
-        print(f"[Probe] late runtime hook install: frames={len(results)} ok={ok_count} failures={len(failures)}")
+        print(
+            f"[Probe] late runtime hook install: frames={len(results)} ok={ok_count} "
+            f"failures={len(failures)} reason={reason} hint_qi={hinted_qi}"
+        )
         for item in results[:8]:
             print(
                 f"  runtime frame[{item['idx']}] {item['href']} "
@@ -9471,7 +9520,7 @@ def protocol_time_warp_hold(
         min_ready = max(0, int(min_runtime_hook_ready_frames or 0))
         max_tries = max(1, int(prehold_hook_guard_retries or 0) + 1)
         for guard_try in range(max_tries):
-            runtime_results = install_late_runtime_hook()
+            runtime_results = install_late_runtime_hook(reason=f"pre_readiness_guard_{guard_try + 1}")
             eligible_runtime = sum(1 for item in runtime_results if (not require_chctx_runtime_ready or item.get("isChctx")))
             effective_min_ready = min_ready if min_ready else 0
             ready = sum(
@@ -9517,6 +9566,12 @@ def protocol_time_warp_hold(
             + json.dumps(prehold_ready, ensure_ascii=False)[:1400]
         )
         return False
+
+    if install_runtime_hook_late and active_score_qi:
+        # The collector can produce a side challenge after the active ch_ctx frame
+        # has already stabilized.  Re-seed the hook with the readiness-confirmed qi
+        # so KNP prestart and final normalization do not follow a later score|1 qi.
+        install_late_runtime_hook(active_score_qi, reason="active_prehold_qi")
 
     if not skip_mid_snapshots:
         try:
@@ -10115,7 +10170,7 @@ def protocol_time_warp_hold(
                     f"try={knp_try + 1}/{max_knp_tries}; waiting before retry"
                 )
                 try:
-                    install_late_runtime_hook()
+                    install_late_runtime_hook(active_score_qi, reason=f"knp_retry_{knp_try + 2}")
                 except Exception:
                     pass
                 page.wait_for_timeout(650 + knp_try * 350)
