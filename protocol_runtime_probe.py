@@ -10439,6 +10439,26 @@ def protocol_time_warp_hold(
                 except Exception:
                     pass
                 return False
+        try:
+            target2, box2 = controller._locate_hold_button(page)
+            if box2:
+                target, box = target2, box2
+                x = box["x"] + box["width"] * 0.385
+                y = box["y"] + box["height"] * 0.56
+                print(f"[Probe] time_warp_hold predown retarget=({x:.1f},{y:.1f}) box={box}")
+        except Exception as exc:
+            print(f"[Probe] time_warp_hold predown retarget failed: {exc!r}")
+        try:
+            # The KNP guard can take several seconds, during which hsprotect may
+            # remount the nested about:blank button. Refresh Chromium's hit-test
+            # target immediately before pressing so mouseDown lands in the same
+            # leaf frame as the pressed move/release stream.
+            page.mouse.move(x + 0.15, y - 0.05)
+            page.mouse.move(x, y)
+            page.wait_for_timeout(80)
+            print(f"[Probe] time_warp_hold predown hover refreshed at ({x:.1f},{y:.1f})")
+        except Exception as exc:
+            print(f"[Probe] time_warp_hold predown hover refresh failed: {exc!r}")
         # Start the accelerated clock only after exact KNP material is ready.
         # Otherwise the KNP readiness wait itself inflates fake hold time before
         # the button is pressed, producing 35s+ proof timelines.
